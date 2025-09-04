@@ -405,8 +405,8 @@ def create_benchmark_visualization(json_file):
                             f'<b>Start</b>: {op["start"]:.3f}s<br>' +
                             f'<b>End</b>: {op["end"]:.3f}s<br>' +
                             f'<b>Duration</b>: {op["duration"]:.3f}s<br>' +
-                            f'<b>Iterations/sec</b>: {op["iter_per_sec"]:.2f}<br>' +
-                            f'<b>Seconds/iter</b>: {op["sec_per_iter"]:.3f}s<extra></extra>')
+                            f'<b>Iterations/sec</b>: {op["iter_per_sec"]:.2f} it/s<br>' +
+                            f'<b>Seconds/iter</b>: {op["sec_per_iter"]:.3f} s/it<extra></extra>')
         elif (op['type'] in ['clip_encode', 'load_state_dict', 'load_diffusion_model']) and 'func_name' in op:
             hover_template = (f'<b>{op["name"]}</b><br>' +
                             f'<b>Function</b>: {op["func_name"]}<br>' +
