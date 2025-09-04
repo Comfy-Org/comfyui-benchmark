@@ -1,0 +1,6 @@
+log:
+  iteration_times: true
+name_prefix: benchmark
+nvidia-smi:
+  check_interval: 0.25
+  enable_thread: true

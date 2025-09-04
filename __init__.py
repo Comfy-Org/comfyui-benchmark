@@ -146,12 +146,20 @@ class ExecutionContext:
             "total_ram": comfy.model_management.total_ram,
         }
         self.benchmark_data: dict[str] = {}
-        self.load_torch_file_data: list[dict[str]] = []
-        self.model_load_data: list[dict[str]] = []
+        self.load_data: dict[str,list[dict[str]]] = {
+            "load_diffusion_model": [],
+            "load_torch_file": [],
+            "load_state_dict": [],
+            "model_load": [],
+        }
         self.sampling_data: list[dict[str]] = []
-        self.vae_data: list[dict[str,dict[str]]] = {
+        self.vae_data: dict[str,list[dict[str]]] = {
             "encode": [],
-            "decode": []
+            "decode": [],
+        }
+        self.clip_data: dict[str,list[dict[str]]] = {
+            "encode": [],
+            "tokenize": [],
         }
         self.startup_args = get_provided_args(comfy.cli_args.args, comfy.cli_args.parser)
         self.config: dict[str, Union[dict[str], Any]] = config
@@ -186,6 +194,40 @@ class ExecutionContext:
             logging.info(f"Benchmark: {self.workflow_name} saved to {benchmark_file}")
         except Exception as e:
             logging.error(f"Error saving benchmark file {benchmark_file}: {e}")
+
+def hook_CLIP():
+    def factory_CLIP(func, func_name: str, category: str, check_nested=True):
+        def wrapper_CLIP(*args, **kwargs):
+            # don't track anything if already nested within a benchmark hook
+            if check_nested and getattr(args[0], "_inside_benchmark_hook", False):
+                return func(*args, **kwargs)
+            global GLOBAL_CONTEXT
+            context = GLOBAL_CONTEXT
+            valid_timing = True
+            try:
+                if check_nested:
+                    setattr(args[0], "_inside_benchmark_hook", True)
+                start_time = time.perf_counter()
+                return func(*args, **kwargs)
+            except Exception as _:
+                valid_timing = False
+                raise
+            finally:
+                end_time = time.perf_counter()
+                if check_nested and hasattr(args[0], "_inside_benchmark_hook"):
+                    delattr(args[0], "_inside_benchmark_hook")
+                context.clip_data[category].append({
+                    "model": str(args[0].cond_stage_model.__class__.__name__),
+                    "func_name": func_name,
+                    "elapsed_time": end_time - start_time,
+                    "start_time": start_time,
+                    "valid_timing": valid_timing,
+                })
+        return wrapper_CLIP
+    comfy.sd.CLIP.encode = factory_CLIP(comfy.sd.CLIP.encode, "CLIP.encode", "encode")
+    comfy.sd.CLIP.encode_from_tokens = factory_CLIP(comfy.sd.CLIP.encode_from_tokens, "CLIP.encode_from_tokens", "encode")
+    comfy.sd.CLIP.encode_from_tokens_scheduled = factory_CLIP(comfy.sd.CLIP.encode_from_tokens_scheduled, "CLIP.encode_from_tokens_scheduled", "encode")
+    comfy.sd.CLIP.tokenize = factory_CLIP(comfy.sd.CLIP.tokenize, "CLIP.tokenize", "tokenize", check_nested=False)
 
 def hook_VAE():
     def hook_VAE_encode():
@@ -248,7 +290,7 @@ def hook_LoadedModel_model_load():
                 raise
             finally:
                 end_time = time.perf_counter()
-                context.model_load_data.append({
+                context.load_data["model_load"].append({
                     "model": str(args[0].model.model.__class__.__name__),
                     "elapsed_time": end_time - start_time,
                     "start_time": start_time,
@@ -256,6 +298,56 @@ def hook_LoadedModel_model_load():
                 })
         return wrapper_LoadedModel_model_load
     comfy.model_management.LoadedModel.model_load = factory_LoadedModel_model_load(comfy.model_management.LoadedModel.model_load)
+
+def hook_load_state_dict():
+    def factory_load_state_dict(func, func_name: str):
+        def wrapper_load_state_dict(*args, **kwargs):
+            global GLOBAL_CONTEXT
+            context = GLOBAL_CONTEXT
+            valid_timing = True
+            try:
+                start_time = time.perf_counter()
+                return func(*args, **kwargs)
+            except Exception as _:
+                valid_timing = False
+                raise
+            finally:
+                end_time = time.perf_counter()
+                context.load_data["load_state_dict"].append({
+                    "func_name": func_name,
+                    "elapsed_time": end_time - start_time,
+                    "start_time": start_time,
+                    "valid_timing": valid_timing
+                })
+        return wrapper_load_state_dict
+
+    def factory_load_diffusion_model(func, func_name: str):
+        def wrapper_load_diffusion_model(*args, **kwargs):
+            global GLOBAL_CONTEXT
+            context = GLOBAL_CONTEXT
+            valid_timing = True
+            try:
+                start_time = time.perf_counter()
+                return func(*args, **kwargs)
+            except Exception as _:
+                valid_timing = False
+                raise
+            finally:
+                end_time = time.perf_counter()
+                context.load_data["load_diffusion_model"].append({
+                    "func_name": func_name,
+                    "elapsed_time": end_time - start_time,
+                    "start_time": start_time,
+                    "valid_timing": valid_timing
+                })
+        return wrapper_load_diffusion_model
+
+    comfy.sd.load_state_dict_guess_config = factory_load_state_dict(comfy.sd.load_state_dict_guess_config, "load_state_dict_guess_config")
+    comfy.sd.load_diffusion_model_state_dict = factory_load_state_dict(comfy.sd.load_diffusion_model_state_dict, "load_diffusion_model_state_dict")
+    comfy.sd.load_text_encoder_state_dicts = factory_load_state_dict(comfy.sd.load_text_encoder_state_dicts, "load_text_encoder_state_dicts")
+    comfy.sd.load_diffusion_model = factory_load_diffusion_model(comfy.sd.load_diffusion_model, "load_diffusion_model")
+    comfy.sd.load_checkpoint_guess_config = factory_load_diffusion_model(comfy.sd.load_checkpoint_guess_config, "load_checkpoint_guess_config")
+    comfy.sd.load_clip = factory_load_diffusion_model(comfy.sd.load_clip, "load_clip")
 
 def hook_load_torch_file():
     def factory_load_torch_file(func):
@@ -271,7 +363,7 @@ def hook_load_torch_file():
                 raise
             finally:
                 end_time = time.perf_counter()
-                context.load_torch_file_data.append({
+                context.load_data["load_torch_file"].append({
                     "ckpt": args[0],
                     "elapsed_time": end_time - start_time,
                     "start_time": start_time,
@@ -388,8 +480,10 @@ def initialize_benchmark_hooks():
     hook_PromptExecutor_execute()
     hook_CFGGuider_sample()
     hook_load_torch_file()
+    hook_load_state_dict()
     hook_LoadedModel_model_load()
     hook_VAE()
+    hook_CLIP()
 
 
 class BenchmarkExtension(ComfyExtension):
