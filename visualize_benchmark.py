@@ -65,6 +65,12 @@ def create_benchmark_visualization(json_file):
         device_table_cells.append(['PyTorch Version', device_info['pytorch_version']])
     if 'operating_system' in device_info:
         device_table_cells.append(['Operating System', device_info['operating_system']])
+    
+    # Add startup_args if available
+    if 'startup_args' in data:
+        startup_args = data['startup_args']
+        for key, value in startup_args.items():
+            device_table_cells.append([key, str(value)])
 
     if has_nvidia_data:
         # Use relative times starting from 0
