@@ -167,6 +167,7 @@ def hook_VAE():
                 valid_timing = True
                 try:
                     start_time = time.perf_counter()
+                    return func(*args, **kwargs)
                 except Exception as _:
                     valid_timing = False
                     raise
@@ -177,7 +178,6 @@ def hook_VAE():
                         "start_time": start_time,
                         "valid_timing": valid_timing
                     })
-                return func(*args, **kwargs)
             return wrapper_VAE_decode
         comfy.sd.VAE.decode = factory_VAE_decode(comfy.sd.VAE.decode)
     hook_VAE_encode()
