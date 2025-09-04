@@ -147,39 +147,74 @@ def create_benchmark_visualization(json_file):
     operations = []
     colors = {
         'load_torch_file': 'purple',
-        'model_load': 'orange', 
+        'model_load': 'orange',
+        'load_state_dict': 'brown',
+        'load_diffusion_model': 'indigo',
         'sampling': 'green',
         'sampler_sample': 'cyan',
         'vae_encode': 'blue',
-        'vae_decode': 'red'
+        'vae_decode': 'red',
+        'clip_tokenize': 'magenta',
+        'clip_encode': 'pink'
     }
 
-    for item in data['load_torch_file_data']:
-        if item['valid_timing']:
-            # Convert perf_counter times to relative seconds from workflow start
-            start_time = item['start_time'] - workflow_start
-            end_time = start_time + item['elapsed_time']
-            model_name = item['ckpt'].split('\\')[-1].split('.')[0]
-            operations.append({
-                'type': 'load_torch_file',
-                'name': f'Load: {model_name}',
-                'start': start_time,
-                'end': end_time,
-                'duration': item['elapsed_time']
-            })
+    # Handle both old and new data format
+    if 'load_data' in data:
+        # New format - load_data dictionary
+        for item in data['load_data'].get('load_torch_file', []):
+            if item['valid_timing']:
+                start_time = item['start_time'] - workflow_start
+                end_time = start_time + item['elapsed_time']
+                model_name = item['ckpt'].split('\\')[-1].split('.')[0]
+                operations.append({
+                    'type': 'load_torch_file',
+                    'name': f'Load: {model_name}',
+                    'start': start_time,
+                    'end': end_time,
+                    'duration': item['elapsed_time']
+                })
 
-    for item in data['model_load_data']:
-        if item['valid_timing']:
-            # Convert perf_counter times to relative seconds from workflow start
-            start_time = item['start_time'] - workflow_start
-            end_time = start_time + item['elapsed_time']
-            operations.append({
-                'type': 'model_load',
-                'name': f'Model Load: {item["model"]}',
-                'start': start_time,
-                'end': end_time,
-                'duration': item['elapsed_time']
-            })
+        for item in data['load_data'].get('model_load', []):
+            if item['valid_timing']:
+                start_time = item['start_time'] - workflow_start
+                end_time = start_time + item['elapsed_time']
+                operations.append({
+                    'type': 'model_load',
+                    'name': f'Model Load: {item["model"]}',
+                    'start': start_time,
+                    'end': end_time,
+                    'duration': item['elapsed_time']
+                })
+
+        # New load_state_dict operations
+        for item in data['load_data'].get('load_state_dict', []):
+            if item['valid_timing']:
+                start_time = item['start_time'] - workflow_start
+                end_time = start_time + item['elapsed_time']
+                func_name = item.get('func_name', 'load_state_dict')
+                operations.append({
+                    'type': 'load_state_dict',
+                    'name': f'Load State Dict: {func_name}',
+                    'start': start_time,
+                    'end': end_time,
+                    'duration': item['elapsed_time'],
+                    'func_name': func_name
+                })
+
+        # New load_diffusion_model operations
+        for item in data['load_data'].get('load_diffusion_model', []):
+            if item['valid_timing']:
+                start_time = item['start_time'] - workflow_start
+                end_time = start_time + item['elapsed_time']
+                func_name = item.get('func_name', 'load_diffusion_model')
+                operations.append({
+                    'type': 'load_diffusion_model',
+                    'name': f'Load Diffusion Model: {func_name}',
+                    'start': start_time,
+                    'end': end_time,
+                    'duration': item['elapsed_time'],
+                    'func_name': func_name
+                })
 
     for item in data['sampling_data']:
         # Convert perf_counter times to relative seconds from workflow start
@@ -235,6 +270,37 @@ def create_benchmark_visualization(json_file):
                 'duration': item['elapsed_time']
             })
 
+    # Add clip tokenize operations if they exist
+    if 'clip_data' in data:
+        for item in data['clip_data'].get('tokenize', []):
+            if item['valid_timing']:
+                start_time = item['start_time'] - workflow_start
+                end_time = start_time + item['elapsed_time']
+                model_name = item.get('model', 'CLIP')
+                operations.append({
+                    'type': 'clip_tokenize',
+                    'name': f'CLIP Tokenize: {model_name}',
+                    'start': start_time,
+                    'end': end_time,
+                    'duration': item['elapsed_time']
+                })
+
+        # Add clip encode operations
+        for item in data['clip_data'].get('encode', []):
+            if item['valid_timing']:
+                start_time = item['start_time'] - workflow_start
+                end_time = start_time + item['elapsed_time']
+                model_name = item.get('model', 'CLIP')
+                func_name = item.get('func_name', '')
+                operations.append({
+                    'type': 'clip_encode',
+                    'name': f'CLIP Encode: {model_name}',
+                    'start': start_time,
+                    'end': end_time,
+                    'duration': item['elapsed_time'],
+                    'func_name': func_name
+                })
+
     operations.sort(key=lambda x: x['start'])
 
     # Determine nesting levels for each operation
@@ -257,7 +323,7 @@ def create_benchmark_visualization(json_file):
 
     y_position = 0
     for op in operations:
-        # Custom hover template for sampler_sample operations
+        # Custom hover template for different operation types
         if op['type'] == 'sampler_sample':
             hover_template = (f'<b>{op["name"]}</b><br>' +
                             f'<b>Start</b>: {op["start"]:.3f}s<br>' +
@@ -265,6 +331,12 @@ def create_benchmark_visualization(json_file):
                             f'<b>Duration</b>: {op["duration"]:.3f}s<br>' +
                             f'<b>Iterations/sec</b>: {op["iter_per_sec"]:.2f}<br>' +
                             f'<b>Seconds/iter</b>: {op["sec_per_iter"]:.3f}s<extra></extra>')
+        elif (op['type'] in ['clip_encode', 'load_state_dict', 'load_diffusion_model']) and 'func_name' in op:
+            hover_template = (f'<b>{op["name"]}</b><br>' +
+                            f'<b>Function</b>: {op["func_name"]}<br>' +
+                            f'<b>Start</b>: {op["start"]:.3f}s<br>' +
+                            f'<b>End</b>: {op["end"]:.3f}s<br>' +
+                            f'<b>Duration</b>: {op["duration"]:.3f}s<extra></extra>')
         else:
             hover_template = (f'<b>{op["name"]}</b><br>' +
                             f'<b>Start</b>: {op["start"]:.3f}s<br>' +
