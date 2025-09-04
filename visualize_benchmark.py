@@ -121,6 +121,7 @@ def create_benchmark_visualization(json_file):
                       row=2, col=1)
 
         # Add Power Usage
+        power_percentages = [(p/power_limit)*100 if power_limit else 0 for p in power_draw]
         fig.add_trace(
             go.Scatter(
                 x=relative_times,
@@ -130,7 +131,9 @@ def create_benchmark_visualization(json_file):
                 line=dict(color='green', width=2),
                 fill='tozeroy',
                 hovertemplate='<b>Time</b>: %{x:.2f}s<br>' +
-                              '<b>Power Draw</b>: %{y:.1f}W<extra></extra>'
+                              '<b>Power Draw</b>: %{y:.1f}W<br>' +
+                              '<b>Power Limit %</b>: %{customdata:.1f}%<extra></extra>',
+                customdata=power_percentages
             ),
             row=3, col=1
         )
@@ -146,6 +149,7 @@ def create_benchmark_visualization(json_file):
         'load_torch_file': 'purple',
         'model_load': 'orange', 
         'sampling': 'green',
+        'sampler_sample': 'cyan',
         'vae_encode': 'blue',
         'vae_decode': 'red'
     }
@@ -189,6 +193,22 @@ def create_benchmark_visualization(json_file):
             'duration': item['cfg_guider_elapsed_time']
         })
 
+        # Add sampler_sample if it exists
+        if 'sampler_sample_start_time' in item and 'sampler_sample_end_time' in item:
+            start_time = item['sampler_sample_start_time'] - workflow_start
+            end_time = item['sampler_sample_end_time'] - workflow_start
+            avg_iter_time = item.get('average_iteration_time', 0)
+            iter_per_sec = 1.0 / avg_iter_time if avg_iter_time > 0 else 0
+            operations.append({
+                'type': 'sampler_sample',
+                'name': f'Sampler Sample: {item["model"]} ({item["steps"]} steps)',
+                'start': start_time,
+                'end': end_time,
+                'duration': item['sampler_sample_elapsed_time'],
+                'iter_per_sec': iter_per_sec,
+                'sec_per_iter': avg_iter_time
+            })
+
     for item in data['vae_data']['encode']:
         if item['valid_timing']:
             # Convert perf_counter times to relative seconds from workflow start
@@ -217,19 +237,51 @@ def create_benchmark_visualization(json_file):
 
     operations.sort(key=lambda x: x['start'])
 
+    # Determine nesting levels for each operation
+    def is_contained(op1, op2):
+        """Check if op1 is contained within op2"""
+        return op1['start'] >= op2['start'] and op1['end'] <= op2['end'] and op1 != op2
+
+    # Calculate nesting level for each operation
+    for i, op in enumerate(operations):
+        containing_ops = []
+        for j, other_op in enumerate(operations):
+            if is_contained(op, other_op):
+                containing_ops.append(j)
+        op['nesting_level'] = len(containing_ops)
+        op['index'] = i
+
+    # Base sizes - make bars much larger to use the space better
+    base_width = 80
+    width_reduction_per_level = 15
+
     y_position = 0
     for op in operations:
+        # Custom hover template for sampler_sample operations
+        if op['type'] == 'sampler_sample':
+            hover_template = (f'<b>{op["name"]}</b><br>' +
+                            f'<b>Start</b>: {op["start"]:.3f}s<br>' +
+                            f'<b>End</b>: {op["end"]:.3f}s<br>' +
+                            f'<b>Duration</b>: {op["duration"]:.3f}s<br>' +
+                            f'<b>Iterations/sec</b>: {op["iter_per_sec"]:.2f}<br>' +
+                            f'<b>Seconds/iter</b>: {op["sec_per_iter"]:.3f}s<extra></extra>')
+        else:
+            hover_template = (f'<b>{op["name"]}</b><br>' +
+                            f'<b>Start</b>: {op["start"]:.3f}s<br>' +
+                            f'<b>End</b>: {op["end"]:.3f}s<br>' +
+                            f'<b>Duration</b>: {op["duration"]:.3f}s<extra></extra>')
+
+        # Calculate line width based on nesting level
+        line_width = max(base_width - (op['nesting_level'] * width_reduction_per_level), 20)
+
         fig.add_trace(
             go.Scatter(
                 x=[op['start'], op['end']],
                 y=[y_position, y_position],
                 mode='lines',
-                line=dict(color=colors.get(op['type'], 'gray'), width=20),
+                line=dict(color=colors.get(op['type'], 'gray'), width=line_width),
                 name=op['name'],
-                hovertemplate=f'<b>{op["name"]}</b><br>' +
-                              f'<b>Start</b>: {op["start"]:.3f}s<br>' +
-                              f'<b>End</b>: {op["end"]:.3f}s<br>' +
-                              f'<b>Duration</b>: {op["duration"]:.3f}s<extra></extra>',
+                hovertemplate=hover_template,
                 showlegend=False
             ),
             row=operations_row, col=1

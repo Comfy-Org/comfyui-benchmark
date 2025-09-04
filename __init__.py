@@ -295,6 +295,21 @@ def hook_CFGGuider_sample():
         comfy.patcher_extension.add_wrapper_with_key(comfy.patcher_extension.WrappersMP.PREDICT_NOISE, "benchmark_sampling", factory_predict_noise(context, temp_dict),
                                             model_options, is_model_options=True)
 
+    def add_sampler_sample_wrapper(model_options: dict, context: ExecutionContext, temp_dict: dict[str]):
+        def factory_sampler_sample(c, temp_dict: dict[str]):
+            def wrapper_sampler_sample(executor,*args, **kwargs):
+                try:
+                    start_time = time.perf_counter()
+                    return executor(*args, **kwargs)
+                finally:
+                    end_time = time.perf_counter()
+                    temp_dict["sampler_sample_elapsed_time"] = end_time - start_time
+                    temp_dict["sampler_sample_start_time"] = start_time
+                    temp_dict["sampler_sample_end_time"] = end_time
+            return wrapper_sampler_sample
+        comfy.patcher_extension.add_wrapper_with_key(comfy.patcher_extension.WrappersMP.SAMPLER_SAMPLE, "benchmark_sampling", factory_sampler_sample(context, temp_dict),
+                                            model_options, is_model_options=True)
+
     def factory_CFGGuider_sample(func):
         def wrapper_CFGGuider_sample(*args, **kwargs):
             global GLOBAL_CONTEXT
@@ -309,6 +324,7 @@ def hook_CFGGuider_sample():
                 temp_dict["steps"] = len(args[4])-1  # NOTE: uses sigmas passed into sample() function
                 if GLOBAL_CONTEXT.get_log_dict().get("iteration_times", True):
                     add_predict_noise_wrapper(model_options, GLOBAL_CONTEXT, temp_dict)
+                add_sampler_sample_wrapper(model_options, GLOBAL_CONTEXT, temp_dict)
                 guider.model_options = model_options
                 cfg_guider_start_time = time.perf_counter()
                 return func(*args, **kwargs)
