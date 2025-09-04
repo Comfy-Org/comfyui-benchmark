@@ -13,6 +13,8 @@ import comfy.model_patcher
 import comfy.patcher_extension
 import comfy.model_management
 import comfy.cli_args
+import comfy.utils
+import comfy.sd
 
 
 if comfy.model_management.is_nvidia():
@@ -72,6 +74,7 @@ def get_from_nvidia_smi(query: str, param: str, _query_list: list[str]=nvidia_sm
     values = query.split(",")
     return values[index]
 
+
 def json_func(obj):
     try:
         return str(obj)
@@ -97,7 +100,13 @@ class ExecutionContext:
         self.version = VERSION
         self.device_name = comfy.model_management.get_torch_device_name(comfy.model_management.get_torch_device())
         self.benchmark_data: dict[str] = {}
+        self.load_torch_file_data: list[dict[str]] = []
+        self.model_load_data: list[dict[str]] = []
         self.sampling_data: list[dict[str]] = []
+        self.vae_data: list[dict[str,dict[str]]] = {
+            "encode": [],
+            "decode": []
+        }
         self.startup_args = get_provided_args(comfy.cli_args.args, comfy.cli_args.parser)
         self.nvidia_smi_data_info: dict[str, str] = {}
         self.nvidia_smi_data: list[str] = []
@@ -127,23 +136,114 @@ class ExecutionContext:
         except Exception as e:
             logging.error(f"Error saving benchmark file {benchmark_file}: {e}")
 
+def hook_VAE():
+    def hook_VAE_encode():
+        def factory_VAE_encode(func):
+            def wrapper_VAE_encode(*args, **kwargs):
+                global GLOBAL_CONTEXT
+                context = GLOBAL_CONTEXT
+                valid_timing = True
+                try:
+                    start_time = time.perf_counter()
+                    return func(*args, **kwargs)
+                except Exception as _:
+                    valid_timing = False
+                    raise
+                finally:
+                    end_time = time.perf_counter()
+                    context.vae_data["encode"].append({
+                        "elapsed_time": end_time - start_time,
+                        "start_time": start_time,
+                        "valid_timing": valid_timing
+                    })
+            return wrapper_VAE_encode
+        comfy.sd.VAE.encode = factory_VAE_encode(comfy.sd.VAE.encode)
 
+    def hook_VAE_decode():
+        def factory_VAE_decode(func):
+            def wrapper_VAE_decode(*args, **kwargs):
+                global GLOBAL_CONTEXT
+                context = GLOBAL_CONTEXT
+                valid_timing = True
+                try:
+                    start_time = time.perf_counter()
+                except Exception as _:
+                    valid_timing = False
+                    raise
+                finally:
+                    end_time = time.perf_counter()
+                    context.vae_data["decode"].append({
+                        "elapsed_time": end_time - start_time,
+                        "start_time": start_time,
+                        "valid_timing": valid_timing
+                    })
+                return func(*args, **kwargs)
+            return wrapper_VAE_decode
+        comfy.sd.VAE.decode = factory_VAE_decode(comfy.sd.VAE.decode)
+    hook_VAE_encode()
+    hook_VAE_decode()
 
-def add_sampling_wrappers(model_options: dict, context: ExecutionContext, temp_dict: dict[str]):
-    def factory_predict_noise(c, temp_dict: dict[str]):
-        def wrapper_predict_noise(executor, *args, **kwargs):
-            temp_dict.setdefault("_iteration_times", [])
+def hook_LoadedModel_model_load():
+    def factory_LoadedModel_model_load(func):
+        def wrapper_LoadedModel_model_load(*args, **kwargs):
+            global GLOBAL_CONTEXT
+            context = GLOBAL_CONTEXT
+            valid_timing = True
             try:
                 start_time = time.perf_counter()
-                return executor(*args, **kwargs)
+                return func(*args, **kwargs)
+            except Exception as _:
+                valid_timing = False
+                raise
             finally:
                 end_time = time.perf_counter()
-                temp_dict["_iteration_times"].append(end_time - start_time)
-        return wrapper_predict_noise
-    comfy.patcher_extension.add_wrapper_with_key(comfy.patcher_extension.WrappersMP.PREDICT_NOISE, "benchmark_sampling", factory_predict_noise(context, temp_dict),
-                                        model_options, is_model_options=True)
+                context.model_load_data.append({
+                    "model_name": str(args[0].model.model.__class__.__name__),
+                    "elapsed_time": end_time - start_time,
+                    "start_time": start_time,
+                    "valid_timing": valid_timing
+                })
+        return wrapper_LoadedModel_model_load
+    comfy.model_management.LoadedModel.model_load = factory_LoadedModel_model_load(comfy.model_management.LoadedModel.model_load)
+
+def hook_load_torch_file():
+    def factory_load_torch_file(func):
+        def wrapper_load_torch_file(*args, **kwargs):
+            global GLOBAL_CONTEXT
+            context = GLOBAL_CONTEXT
+            valid_timing = True
+            try:
+                start_time = time.perf_counter()
+                return func(*args, **kwargs)
+            except Exception as _:
+                valid_timing = False
+                raise
+            finally:
+                end_time = time.perf_counter()
+                context.load_torch_file_data.append({
+                    "ckpt": args[0],
+                    "elapsed_time": end_time - start_time,
+                    "start_time": start_time,
+                    "valid_timing": valid_timing
+                })
+        return wrapper_load_torch_file
+    comfy.utils.load_torch_file = factory_load_torch_file(comfy.utils.load_torch_file)
 
 def hook_CFGGuider_sample():
+    def add_sampling_wrappers(model_options: dict, context: ExecutionContext, temp_dict: dict[str]):
+        def factory_predict_noise(c, temp_dict: dict[str]):
+            def wrapper_predict_noise(executor, *args, **kwargs):
+                temp_dict.setdefault("_iteration_times", [])
+                try:
+                    start_time = time.perf_counter()
+                    return executor(*args, **kwargs)
+                finally:
+                    end_time = time.perf_counter()
+                    temp_dict["_iteration_times"].append(end_time - start_time)
+            return wrapper_predict_noise
+        comfy.patcher_extension.add_wrapper_with_key(comfy.patcher_extension.WrappersMP.PREDICT_NOISE, "benchmark_sampling", factory_predict_noise(context, temp_dict),
+                                            model_options, is_model_options=True)
+
     def factory_CFGGuider_sample(func):
         def wrapper_CFGGuider_sample(*args, **kwargs):
             global GLOBAL_CONTEXT
@@ -160,7 +260,7 @@ def hook_CFGGuider_sample():
                 return func(*args, **kwargs)
             finally:
                 cfg_guider_end_time = time.perf_counter()
-                temp_dict["cfg_guider_time"] = cfg_guider_end_time - cfg_guider_start_time
+                temp_dict["cfg_guider_elapsed_time"] = cfg_guider_end_time - cfg_guider_start_time
                 temp_dict["_cfg_guider_start_time"] = cfg_guider_start_time
                 temp_dict["_cfg_guider_end_time"] = cfg_guider_end_time
                 if "_iteration_times" in temp_dict:
@@ -173,52 +273,53 @@ def hook_CFGGuider_sample():
     comfy.samplers.CFGGuider.sample = factory_CFGGuider_sample(comfy.samplers.CFGGuider.sample)
 
 def hook_PromptExecutor_execute():
+    def factory_PromptExecutor_execute(func):
+        '''
+        Create wrapper function that will time the total execution time for a workflow.
+        '''
+        def wrapper_PromptExecutor_execute(*args, **kwargs):
+            global GLOBAL_CONTEXT, ENABLE_NVIDIA_SMI_DATA, INITIAL_NVIDIA_SMI_QUERY, INFO_NVIDIA_SMI_QUERY, NVIDIA_SMI_ERROR
+            args = args
+            kwargs = kwargs
+            # create execution context
+            context = ExecutionContext(workflow_name="benchmark")
+            GLOBAL_CONTEXT = context
+            # if its an nvidia card, we can do overall memory usage tracking via nvidia-smi calls
+            thread_started = False
+            if ENABLE_NVIDIA_SMI_DATA:
+                out_queue, in_queue, thread = create_nvidia_smi_thread()
+                thread_started = True
+            start_datetime = datetime.datetime.now().strftime("%Y/%m/%d %H:%M:%S.%f")
+            try:
+                start_time = time.perf_counter()
+                result = func(*args, **kwargs)
+                end_time = time.perf_counter()
+                context.benchmark_data["execution_elapsed_time"] = end_time - start_time
+                context.benchmark_data["_workflow_start_datetime"] = start_datetime
+                context.benchmark_data["_workflow_start_time"] = start_time
+                context.benchmark_data["_workflow_end_time"] = end_time
+                return result
+            finally:
+                if thread_started:
+                    try:
+                        in_queue.put("stop")
+                        thread.join()
+                        while not out_queue.empty():
+                            context.nvidia_smi_data.append(out_queue.get_nowait())
+                    except Exception as e:
+                        logging.error(f"Error stopping nvidia-smi thread: {e}")
+                context.save_to_log_file()
+                GLOBAL_CONTEXT = None
+
+        return wrapper_PromptExecutor_execute
     execution.PromptExecutor.execute = factory_PromptExecutor_execute(execution.PromptExecutor.execute)
-
-def factory_PromptExecutor_execute(func):
-    '''
-    Create wrapper function that will time the total execution time for a workflow.
-    '''
-    def wrapper_PromptExecutor_execute(*args, **kwargs):
-        global GLOBAL_CONTEXT, ENABLE_NVIDIA_SMI_DATA, INITIAL_NVIDIA_SMI_QUERY, INFO_NVIDIA_SMI_QUERY, NVIDIA_SMI_ERROR
-        args = args
-        kwargs = kwargs
-        # create execution context
-        context = ExecutionContext(workflow_name="benchmark")
-        GLOBAL_CONTEXT = context
-        # if its an nvidia card, we can do overall memory usage tracking via nvidia-smi calls
-        thread_started = False
-        if ENABLE_NVIDIA_SMI_DATA:
-            out_queue, in_queue, thread = create_nvidia_smi_thread()
-            thread_started = True
-        start_datetime = datetime.datetime.now().strftime("%Y/%m/%d %H:%M:%S.%f")
-        try:
-            start_time = time.perf_counter()
-            result = func(*args, **kwargs)
-            end_time = time.perf_counter()
-            context.benchmark_data["execution_time"] = end_time - start_time
-            context.benchmark_data["_workflow_start_datetime"] = start_datetime
-            context.benchmark_data["_workflow_start_time"] = start_time
-            context.benchmark_data["_workflow_end_time"] = end_time
-            return result
-        finally:
-            if thread_started:
-                try:
-                    in_queue.put("stop")
-                    thread.join()
-                    while not out_queue.empty():
-                        context.nvidia_smi_data.append(out_queue.get_nowait())
-                except Exception as e:
-                    logging.error(f"Error stopping nvidia-smi thread: {e}")
-            context.save_to_log_file(print_data=True)
-            GLOBAL_CONTEXT = None
-
-    return wrapper_PromptExecutor_execute
-
 
 def initialize_benchmark_hooks():
     hook_PromptExecutor_execute()
     hook_CFGGuider_sample()
+    hook_load_torch_file()
+    hook_LoadedModel_model_load()
+    hook_VAE()
 
 
 class BenchmarkExtension(ComfyExtension):
