@@ -1,2 +1,80 @@
 # comfyui-benchmark
 Custom node pack for benchmarking ComfyUI performance
+
+## Output
+
+Benchmark results are saved to the `ComfyUI/outputs/benchmarks` directory as JSON files with timestamps in their filenames.
+
+## Configuration
+
+The benchmark behavior can be configured using `config.yaml`. 
+
+### Setting up config.yaml
+
+- On first run, a `config.yaml` file is automatically generated with default settings
+- Alternatively, you can rename `config.yaml.example` to `config.yaml` before the first run to use your preferred settings
+- The configuration is read at the start of each workflow execution, so you can modify settings without restarting ComfyUI
+
+### Configuration Options
+
+The `config.yaml` file contains the following settings to control benchmark data collection:
+
+- `iteration_times` (default: true) - When set to false, disables logging of individual step execution times
+- `enable_thread` (default: true) - When set to false, disables nvidia-smi data collection during workflow execution (no VRAM, GPU Utilization, or Power Usage data will be recorded)
+- `check_interval` (default: 0.25) - The time interval in seconds between nvidia-smi data collection calls during workflow execution
+
+## Visualization
+
+The benchmark results can be visualized using the included `visualize_benchmark.py` script.
+
+### Usage
+
+1. Install the required dependency:
+   ```bash
+   pip install -r visualize_requirements.txt
+   ```
+
+2. Run the visualization script with a benchmark file:
+   ```bash
+   python visualize_benchmark.py <benchmark_file.json>
+   ```
+   
+   For example:
+   ```bash
+   python visualize_benchmark.py benchmark_20250904_140902.json
+   ```
+
+   The benchmark file can be specified with any path - it doesn't need to follow a specific naming format.
+
+### Command-line Arguments
+
+The visualization script supports the following optional arguments:
+
+- `--save-html [PATH]` - Save the visualization as an interactive HTML file. If no path is provided, saves in the current directory with `_visualization.html` suffix.
+- `--save-image [PATH]` - Save the visualization as a static image (PNG, JPG, SVG, etc.). If no path is provided, saves in the current directory with `_visualization.png` suffix. **Note: Requires the `kaleido` package (`pip install kaleido`).**
+- `--no-show` - Skip opening the visualization in the browser (useful for batch processing or headless environments).
+
+Examples:
+```bash
+# Open in browser and save as HTML in current directory
+python visualize_benchmark.py benchmark_20250904_140902.json --save-html
+
+# Save as PNG with custom path without opening browser
+python visualize_benchmark.py benchmark_20250904_140902.json --save-image results/benchmark.png --no-show
+
+# Save both HTML and image formats
+python visualize_benchmark.py benchmark_20250904_140902.json --save-html report.html --save-image report.svg
+```
+
+### Visualization Features
+
+The script creates an interactive Plotly graph showing:
+- **Device Information Table** - GPU details, PyTorch version, startup arguments
+- **VRAM Usage** - Timeline showing memory consumption with initial and maximum VRAM lines (NVIDIA only*)
+- **GPU Utilization** - GPU usage percentage over time (NVIDIA only*)
+- **Power Usage** - Power draw with both average and instantaneous values (NVIDIA only*)
+- **Workflow Operations Timeline** - Color-coded bars showing when different operations occurred (model loading, sampling, VAE encode/decode, etc.)
+
+*Note: VRAM usage, GPU utilization, and power usage graphs are only available on NVIDIA devices with the `nvidia-smi` command working. The workflow operations timeline will still be displayed for all devices.
+
+The visualization opens in your default web browser and supports interactive zooming, panning, and hovering for detailed information.

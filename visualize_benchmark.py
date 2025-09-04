@@ -1,6 +1,7 @@
 # NOTE: this file was 99% written by Claude Code
 import json
 import sys
+import argparse
 from datetime import datetime
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -518,11 +519,44 @@ def create_benchmark_visualization(json_file):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        json_file = sys.argv[1]
-    else:
-        json_file = "benchmark_20250903_222144.json"
-
-    fig = create_benchmark_visualization(json_file)
-    fig.show()
-    # fig.write_html(f"{json_file.split('.')[0]}_visualization.html")
+    import os
+    
+    parser = argparse.ArgumentParser(description='Visualize ComfyUI benchmark results')
+    parser.add_argument('benchmark_file', help='Path to the benchmark JSON file')
+    parser.add_argument('--save-image', dest='save_image', nargs='?', const='default', 
+                        help='Save visualization as an image file (PNG, JPG, SVG, etc.). If no path provided, saves in current directory.')
+    parser.add_argument('--save-html', dest='save_html', nargs='?', const='default',
+                        help='Save visualization as an HTML file. If no path provided, saves in current directory.')
+    parser.add_argument('--no-show', dest='no_show', action='store_true', help='Skip opening the visualization in browser')
+    
+    args = parser.parse_args()
+    
+    # Create the visualization
+    fig = create_benchmark_visualization(args.benchmark_file)
+    
+    # Generate default filename from benchmark file if needed
+    base_name = os.path.splitext(os.path.basename(args.benchmark_file))[0]
+    
+    # Save as image if requested
+    if args.save_image:
+        if args.save_image == 'default':
+            image_path = f"{base_name}_visualization.png"
+        else:
+            image_path = args.save_image
+        print(f"Saving image to: {image_path}")
+        fig.write_image(image_path)
+    
+    # Save as HTML if requested
+    if args.save_html:
+        if args.save_html == 'default':
+            html_path = f"{base_name}_visualization.html"
+        else:
+            html_path = args.save_html
+        print(f"Saving HTML to: {html_path}")
+        fig.write_html(html_path)
+    
+    # Show the figure unless --no-show is specified
+    if not args.no_show:
+        fig.show()
+    elif not args.save_image and not args.save_html:
+        print("Warning: --no-show specified without --save-image or --save-html. No output generated.")
