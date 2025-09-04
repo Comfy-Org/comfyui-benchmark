@@ -544,7 +544,7 @@ if __name__ == "__main__":
         else:
             image_path = args.save_image
         print(f"Saving image to: {image_path}")
-        fig.write_image(image_path)
+        fig.write_image(image_path, width=1920, height=1080, scale=2)
     
     # Save as HTML if requested
     if args.save_html:
