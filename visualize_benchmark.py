@@ -40,42 +40,106 @@ def create_benchmark_visualization(json_file):
     workflow_end = data['benchmark_data']['workflow_end_time']
     workflow_start_datetime = datetime.strptime(data['benchmark_data']['workflow_start_datetime'], '%Y/%m/%d %H:%M:%S.%f')
 
+    # Parse nvidia-smi data if it exists
     nvidia_smi_data = []
-    for line in data['nvidia_smi_data']:
-        parsed = parse_nvidia_smi_line(line, workflow_start_datetime, workflow_start)
-        if parsed:
-            nvidia_smi_data.append(parsed)
+    if 'nvidia_smi_data' in data and data['nvidia_smi_data']:
+        for line in data['nvidia_smi_data']:
+            parsed = parse_nvidia_smi_line(line, workflow_start_datetime, workflow_start)
+            if parsed:
+                nvidia_smi_data.append(parsed)
 
-    # Use relative times starting from 0
-    relative_times = [d['relative_time'] for d in nvidia_smi_data]
-    memory_used = [d['memory_used'] for d in nvidia_smi_data]
+    # Determine which graphs to show based on available data
+    has_nvidia_data = len(nvidia_smi_data) > 0
 
-    fig = make_subplots(
-        rows=2, cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.05,
-        subplot_titles=(f'VRAM Usage - {device_name}', 'Workflow Operations Timeline'),
-        row_heights=[0.7, 0.3]
-    )
+    if has_nvidia_data:
+        # Use relative times starting from 0
+        relative_times = [d['relative_time'] for d in nvidia_smi_data]
+        memory_used = [d['memory_used'] for d in nvidia_smi_data]
+        gpu_utilization = [d['gpu_utilization'] for d in nvidia_smi_data]
+        power_draw = [d['power_draw'] for d in nvidia_smi_data]
+        power_limit = nvidia_smi_data[0]['power_limit'] if nvidia_smi_data else None
 
-    fig.add_trace(
-        go.Bar(
-            x=relative_times,
-            y=memory_used,
-            name='VRAM Used (MB)',
-            marker_color='lightblue',
-            hovertemplate='<b>Time</b>: %{x:.2f}s<br>' +
-                          '<b>VRAM</b>: %{y} MB<br>' +
-                          '<b>Percentage</b>: %{customdata:.1f}%<extra></extra>',
-            customdata=[(m/total_vram)*100 for m in memory_used]
-        ),
-        row=1, col=1
-    )
+        # Create subplot with all graphs
+        fig = make_subplots(
+            rows=4, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.05,
+            subplot_titles=(f'VRAM Usage - {device_name}', 'GPU Utilization', 'Power Usage', 'Workflow Operations Timeline'),
+            row_heights=[0.35, 0.2, 0.2, 0.25]
+        )
+        operations_row = 4
+    else:
+        # Create subplot with only operations timeline
+        fig = make_subplots(
+            rows=1, cols=1,
+            subplot_titles=('Workflow Operations Timeline',),
+            row_heights=[1.0]
+        )
+        operations_row = 1
 
-    fig.add_hline(y=total_vram, line_dash="dash", line_color="red", 
-                  annotation_text=f"Max VRAM: {total_vram} MB",
-                  annotation_position="top right",
-                  row=1, col=1)
+    if has_nvidia_data:
+        # Add VRAM Usage
+        fig.add_trace(
+            go.Scatter(
+                x=relative_times,
+                y=memory_used,
+                name='VRAM Used (MB)',
+                mode='lines',
+                line=dict(color='darkblue', width=2),
+                fill='tozeroy',
+                hovertemplate='<b>Time</b>: %{x:.2f}s<br>' +
+                              '<b>VRAM</b>: %{y} MB<br>' +
+                              '<b>Percentage</b>: %{customdata:.1f}%<extra></extra>',
+                customdata=[(m/total_vram)*100 for m in memory_used]
+            ),
+            row=1, col=1
+        )
+
+        fig.add_hline(y=total_vram, line_dash="dash", line_color="red", 
+                      annotation_text=f"Max VRAM: {total_vram} MB",
+                      annotation_position="top right",
+                      row=1, col=1)
+
+        # Add GPU Utilization
+        fig.add_trace(
+            go.Scatter(
+                x=relative_times,
+                y=gpu_utilization,
+                name='GPU Utilization (%)',
+                mode='lines',
+                line=dict(color='orange', width=2),
+                fill='tozeroy',
+                hovertemplate='<b>Time</b>: %{x:.2f}s<br>' +
+                              '<b>GPU Utilization</b>: %{y}%<extra></extra>'
+            ),
+            row=2, col=1
+        )
+
+        fig.add_hline(y=100, line_dash="dash", line_color="gray", 
+                      annotation_text="100%",
+                      annotation_position="top right",
+                      row=2, col=1)
+
+        # Add Power Usage
+        fig.add_trace(
+            go.Scatter(
+                x=relative_times,
+                y=power_draw,
+                name='Power Draw (W)',
+                mode='lines',
+                line=dict(color='green', width=2),
+                fill='tozeroy',
+                hovertemplate='<b>Time</b>: %{x:.2f}s<br>' +
+                              '<b>Power Draw</b>: %{y:.1f}W<extra></extra>'
+            ),
+            row=3, col=1
+        )
+
+        if power_limit:
+            fig.add_hline(y=power_limit, line_dash="dash", line_color="red", 
+                          annotation_text=f"Power Limit: {power_limit:.0f}W",
+                          annotation_position="top right",
+                          row=3, col=1)
 
     operations = []
     colors = {
@@ -168,7 +232,7 @@ def create_benchmark_visualization(json_file):
                               f'<b>Duration</b>: {op["duration"]:.3f}s<extra></extra>',
                 showlegend=False
             ),
-            row=2, col=1
+            row=operations_row, col=1
         )
 
     legend_items = set()
@@ -183,13 +247,16 @@ def create_benchmark_visualization(json_file):
                     name=op['type'].replace('_', ' ').title(),
                     showlegend=True
                 ),
-                row=2, col=1
+                row=operations_row, col=1
             )
             legend_items.add(op['type'])
 
-    fig.update_xaxes(title_text="Time (seconds from start)", row=2, col=1)
-    fig.update_yaxes(title_text="VRAM (MB)", row=1, col=1)
-    fig.update_yaxes(showticklabels=False, row=2, col=1)
+    fig.update_xaxes(title_text="Time (seconds from start)", row=operations_row, col=1)
+    if has_nvidia_data:
+        fig.update_yaxes(title_text="VRAM (MB)", row=1, col=1)
+        fig.update_yaxes(title_text="GPU %", row=2, col=1)
+        fig.update_yaxes(title_text="Power (W)", row=3, col=1)
+    fig.update_yaxes(showticklabels=False, row=operations_row, col=1)
 
     fig.update_layout(
         title=f"ComfyUI Benchmark - {data['workflow_name']}",
@@ -202,9 +269,16 @@ def create_benchmark_visualization(json_file):
             xanchor="center",
             x=0.5
         ),
-        xaxis=dict(tickformat='.1f', ticksuffix='s'),
-        xaxis2=dict(tickformat='.1f', ticksuffix='s')
+        xaxis=dict(tickformat='.1f', ticksuffix='s')
     )
+
+    # Add tickformat for all x-axes if nvidia data is present
+    if has_nvidia_data:
+        fig.update_layout(
+            xaxis2=dict(tickformat='.1f', ticksuffix='s'),
+            xaxis3=dict(tickformat='.1f', ticksuffix='s'),
+            xaxis4=dict(tickformat='.1f', ticksuffix='s')
+        )
 
     return fig
 
