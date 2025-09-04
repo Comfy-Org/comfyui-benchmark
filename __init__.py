@@ -4,6 +4,7 @@ import time
 import datetime
 import logging
 import os
+import sys
 import json
 import argparse
 import yaml
@@ -141,6 +142,8 @@ class ExecutionContext:
         self.version = VERSION
         self.device_info = {
             "name": comfy.model_management.get_torch_device_name(comfy.model_management.get_torch_device()),
+            "pytorch_version": comfy.model_management.torch_version,
+            "operating_system": str(sys.platform),
             "vram_state": comfy.model_management.vram_state.name,
             "total_vram": comfy.model_management.total_vram,
             "total_ram": comfy.model_management.total_ram,
