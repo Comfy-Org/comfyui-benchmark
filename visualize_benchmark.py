@@ -72,6 +72,25 @@ def create_benchmark_visualization(json_file):
         for key, value in startup_args.items():
             device_table_cells.append([key, str(value)])
 
+    # Parse initial VRAM usage if available
+    initial_vram = None
+    if 'nvidia_smi_data_info' in data:
+        nvidia_smi_info = data['nvidia_smi_data_info']
+        if 'initial_nvidia_smi_query' in nvidia_smi_info and 'nvidia_smi_query_params' in nvidia_smi_info:
+            initial_query = nvidia_smi_info['initial_nvidia_smi_query']
+            query_params = nvidia_smi_info['nvidia_smi_query_params']
+            
+            if initial_query and initial_query.strip() and query_params:
+                # Split the parameters to find the index of memory.used
+                params_list = [p.strip() for p in query_params.split(',')]
+                try:
+                    memory_used_index = params_list.index('memory.used')
+                    initial_parts = initial_query.strip().split(', ')
+                    if len(initial_parts) > memory_used_index:
+                        initial_vram = int(initial_parts[memory_used_index])
+                except (ValueError, IndexError):
+                    pass
+    
     if has_nvidia_data:
         # Use relative times starting from 0
         relative_times = [d['relative_time'] for d in nvidia_smi_data]
@@ -159,6 +178,19 @@ def create_benchmark_visualization(json_file):
                           xanchor="right", yanchor="bottom",
                           showarrow=False,
                           row=vram_row, col=1)
+        
+        # Add initial VRAM usage line if available
+        if initial_vram is not None:
+            fig.add_shape(type="line",
+                          x0=min(relative_times), x1=max(relative_times),
+                          y0=initial_vram, y1=initial_vram,
+                          line=dict(color="blue", dash="dot"),
+                          row=vram_row, col=1)
+            fig.add_annotation(text=f"Initial VRAM: {initial_vram} MB",
+                              x=max(relative_times) * 0.95, y=initial_vram,
+                              xanchor="right", yanchor="top" if initial_vram < total_vram/2 else "bottom",
+                              showarrow=False,
+                              row=vram_row, col=1)
 
         # Add GPU Utilization
         fig.add_trace(
