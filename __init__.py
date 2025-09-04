@@ -1,9 +1,12 @@
+from __future__ import annotations
+from typing import Union, Any
 import time
 import datetime
 import logging
 import os
 import json
 import argparse
+import yaml
 
 from comfy_api.latest import ComfyExtension, io
 import execution
@@ -40,7 +43,7 @@ info_nvidia_smi_query = ["name", "count", "driver_version", "display_attached", 
 _info_nvidia_smi_query_list = ["nvidia-smi", "--query-gpu=" + ",".join(info_nvidia_smi_query), "--format=csv,noheader,nounits"]
 
 # For NVIDIA devices, during the benchmark setup a process to call nvidia-smi regularly (or with varying intervals)
-def nvidia_smi_thread(out_queue: Queue, in_queue: Queue):
+def nvidia_smi_thread(out_queue: Queue, in_queue: Queue, check_interval: float):
     logging.info("Starting nvidia-smi thread")
     while True:
         try:
@@ -49,7 +52,7 @@ def nvidia_smi_thread(out_queue: Queue, in_queue: Queue):
             logging.error(f"Breaking out of nvidia-smi thread due to {e}")
             break
         try:
-            item = in_queue.get(timeout=0.25)
+            item = in_queue.get(timeout=check_interval)
             if item == "stop":
                 break
         except Empty:
@@ -59,10 +62,10 @@ def nvidia_smi_thread(out_queue: Queue, in_queue: Queue):
             break
     logging.info("Exiting nvidia-smi thread")
 
-def create_nvidia_smi_thread():
+def create_nvidia_smi_thread(check_interval: float):
     out_queue = Queue()
     in_queue = Queue()
-    thread = Thread(target=nvidia_smi_thread, args=(out_queue, in_queue))
+    thread = Thread(target=nvidia_smi_thread, args=(out_queue, in_queue, check_interval))
     thread.daemon = True
     thread.start()
     return out_queue, in_queue, thread
@@ -90,15 +93,58 @@ def get_provided_args(args, parser):
     args_dict = vars(args)
     return {k: v for k, v in args_dict.items() if defaults.get(k) != v}
 
-class ExecutionContext:
-    def __init__(self, workflow_name: str=None):
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        if workflow_name is None:
-            self.workflow_name = f"{timestamp}"
+# NOTE: the version of this in comfy.patcher_extension has internal dict merge wrong; so use this instead for now
+def merge_nested_dicts(dict1: dict, dict2: dict, copy_dict1=True):
+    if copy_dict1:
+        merged_dict = comfy.patcher_extension.copy_nested_dicts(dict1)
+    else:
+        merged_dict = dict1
+    for key, value in dict2.items():
+        if isinstance(value, dict):
+            curr_value = merged_dict.setdefault(key, {})
+            merged_dict[key] = merge_nested_dicts(curr_value, value)
+        elif isinstance(value, list):
+            merged_dict.setdefault(key, []).extend(value)
         else:
-            self.workflow_name = f"{workflow_name}_{timestamp}"
+            merged_dict[key] = value
+    return merged_dict
+
+def load_config():
+    config = {
+            "nvidia-smi": {
+                "enable_thread": True,
+                "check_interval": 0.25
+            },
+            "log": {
+                "iteration_times": True,
+            },
+            "name_prefix": "benchmark"
+        }
+    config_file = os.path.join(os.path.dirname(__file__), "config.yaml")
+    if os.path.exists(config_file):
+        with open(config_file, "r") as f:
+            loaded_config = yaml.safe_load(f)
+            config = merge_nested_dicts(config, loaded_config, copy_dict1=True)
+        with open(config_file, "w") as f:
+            yaml.dump(config, f)
+    else:
+        logging.info(f"No config.yaml found for comfyui-benchmark, creating default config at {config_file}")
+        with open(config_file, "w") as f:
+            yaml.dump(config, f)
+    return config
+
+class ExecutionContext:
+    def __init__(self):
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        config = load_config()
+        self.workflow_name = f"{config.get('name_prefix', '')}_{timestamp}"
         self.version = VERSION
-        self.device_name = comfy.model_management.get_torch_device_name(comfy.model_management.get_torch_device())
+        self.device_info = {
+            "name": comfy.model_management.get_torch_device_name(comfy.model_management.get_torch_device()),
+            "vram_state": comfy.model_management.vram_state.name,
+            "total_vram": comfy.model_management.total_vram,
+            "total_ram": comfy.model_management.total_ram,
+        }
         self.benchmark_data: dict[str] = {}
         self.load_torch_file_data: list[dict[str]] = []
         self.model_load_data: list[dict[str]] = []
@@ -108,18 +154,28 @@ class ExecutionContext:
             "decode": []
         }
         self.startup_args = get_provided_args(comfy.cli_args.args, comfy.cli_args.parser)
+        self.config: dict[str, Union[dict[str], Any]] = config
         self.nvidia_smi_data_info: dict[str, str] = {}
         self.nvidia_smi_data: list[str] = []
         self._create_nvidia_smi_data_info()
 
-    def _create_nvidia_smi_data_info(self):
-        self.nvidia_smi_data_info["_info_nvidia_smi_query_params"] = ", ".join(info_nvidia_smi_query)
-        self.nvidia_smi_data_info["_info_nvidia_smi_query"] = INFO_NVIDIA_SMI_QUERY
-        self.nvidia_smi_data_info["_nvidia_smi_query_params"] = ", ".join(nvidia_smi_query)
-        self.nvidia_smi_data_info["_initial_nvidia_smi_query"] = INITIAL_NVIDIA_SMI_QUERY
-        self.nvidia_smi_data_info["_nvidia_smi_error"] = NVIDIA_SMI_ERROR
+    def is_nvidia_smi_thread_enabled(self):
+        return self.config.get("nvidia-smi", {}).get("enable_thread", False)
 
-    def save_to_log_file(self, print_data: bool=False):
+    def get_nvidia_smi_check_interval(self):
+        return self.config.get("nvidia-smi", {}).get("check_interval", 0.25)
+
+    def get_log_dict(self):
+        return self.config.get("log", {})
+
+    def _create_nvidia_smi_data_info(self):
+        self.nvidia_smi_data_info["info_nvidia_smi_query_params"] = ", ".join(info_nvidia_smi_query)
+        self.nvidia_smi_data_info["info_nvidia_smi_query"] = INFO_NVIDIA_SMI_QUERY
+        self.nvidia_smi_data_info["nvidia_smi_query_params"] = ", ".join(nvidia_smi_query)
+        self.nvidia_smi_data_info["initial_nvidia_smi_query"] = INITIAL_NVIDIA_SMI_QUERY
+        self.nvidia_smi_data_info["nvidia_smi_error"] = NVIDIA_SMI_ERROR
+
+    def save_to_log_file(self):
         output_dir = folder_paths.get_output_directory()
         benchmark_dir = os.path.join(output_dir, "benchmark")
         os.makedirs(benchmark_dir, exist_ok=True)
@@ -127,11 +183,6 @@ class ExecutionContext:
         try:
             with open(benchmark_file, "w") as f:
                 json.dump(self.__dict__, f, indent=4, ensure_ascii=False, default=json_func)
-            if print_data:
-                for key, value in self.benchmark_data.items():
-                    if key.startswith("_"):
-                        continue
-                    logging.info(f"Benchmark: {key}: {value}")
             logging.info(f"Benchmark: {self.workflow_name} saved to {benchmark_file}")
         except Exception as e:
             logging.error(f"Error saving benchmark file {benchmark_file}: {e}")
@@ -198,7 +249,7 @@ def hook_LoadedModel_model_load():
             finally:
                 end_time = time.perf_counter()
                 context.model_load_data.append({
-                    "model_name": str(args[0].model.model.__class__.__name__),
+                    "model": str(args[0].model.model.__class__.__name__),
                     "elapsed_time": end_time - start_time,
                     "start_time": start_time,
                     "valid_timing": valid_timing
@@ -230,16 +281,16 @@ def hook_load_torch_file():
     comfy.utils.load_torch_file = factory_load_torch_file(comfy.utils.load_torch_file)
 
 def hook_CFGGuider_sample():
-    def add_sampling_wrappers(model_options: dict, context: ExecutionContext, temp_dict: dict[str]):
+    def add_predict_noise_wrapper(model_options: dict, context: ExecutionContext, temp_dict: dict[str]):
         def factory_predict_noise(c, temp_dict: dict[str]):
             def wrapper_predict_noise(executor, *args, **kwargs):
-                temp_dict.setdefault("_iteration_times", [])
+                temp_dict.setdefault("iteration_times", [])
                 try:
                     start_time = time.perf_counter()
                     return executor(*args, **kwargs)
                 finally:
                     end_time = time.perf_counter()
-                    temp_dict["_iteration_times"].append(end_time - start_time)
+                    temp_dict["iteration_times"].append(end_time - start_time)
             return wrapper_predict_noise
         comfy.patcher_extension.add_wrapper_with_key(comfy.patcher_extension.WrappersMP.PREDICT_NOISE, "benchmark_sampling", factory_predict_noise(context, temp_dict),
                                             model_options, is_model_options=True)
@@ -254,17 +305,20 @@ def hook_CFGGuider_sample():
                 orig_model_options = guider.model_options
                 model_options = comfy.model_patcher.create_model_options_clone(orig_model_options)
                 temp_dict = {}
-                add_sampling_wrappers(model_options, GLOBAL_CONTEXT, temp_dict)
+                temp_dict["model"] = guider.model_patcher.model.__class__.__name__
+                temp_dict["steps"] = len(args[4])-1  # NOTE: uses sigmas passed into sample() function
+                if GLOBAL_CONTEXT.get_log_dict().get("iteration_times", True):
+                    add_predict_noise_wrapper(model_options, GLOBAL_CONTEXT, temp_dict)
                 guider.model_options = model_options
                 cfg_guider_start_time = time.perf_counter()
                 return func(*args, **kwargs)
             finally:
                 cfg_guider_end_time = time.perf_counter()
                 temp_dict["cfg_guider_elapsed_time"] = cfg_guider_end_time - cfg_guider_start_time
-                temp_dict["_cfg_guider_start_time"] = cfg_guider_start_time
-                temp_dict["_cfg_guider_end_time"] = cfg_guider_end_time
-                if "_iteration_times" in temp_dict:
-                    temp_dict["average_iteration_time"] = sum(temp_dict["_iteration_times"]) / len(temp_dict["_iteration_times"])
+                temp_dict["cfg_guider_start_time"] = cfg_guider_start_time
+                temp_dict["cfg_guider_end_time"] = cfg_guider_end_time
+                if "iteration_times" in temp_dict:
+                    temp_dict["average_iteration_time"] = sum(temp_dict["iteration_times"]) / len(temp_dict["iteration_times"])
                 else:
                     temp_dict["average_iteration_time"] = -1
                 GLOBAL_CONTEXT.sampling_data.append(temp_dict)
@@ -282,22 +336,22 @@ def hook_PromptExecutor_execute():
             args = args
             kwargs = kwargs
             # create execution context
-            context = ExecutionContext(workflow_name="benchmark")
+            context = ExecutionContext()
             GLOBAL_CONTEXT = context
             # if its an nvidia card, we can do overall memory usage tracking via nvidia-smi calls
             thread_started = False
-            if ENABLE_NVIDIA_SMI_DATA:
-                out_queue, in_queue, thread = create_nvidia_smi_thread()
+            if context.is_nvidia_smi_thread_enabled() and ENABLE_NVIDIA_SMI_DATA:
+                out_queue, in_queue, thread = create_nvidia_smi_thread(context.get_nvidia_smi_check_interval())
                 thread_started = True
-            start_datetime = datetime.datetime.now().strftime("%Y/%m/%d %H:%M:%S.%f")
             try:
+                start_datetime = datetime.datetime.now().strftime("%Y/%m/%d %H:%M:%S.%f")
                 start_time = time.perf_counter()
                 result = func(*args, **kwargs)
                 end_time = time.perf_counter()
                 context.benchmark_data["execution_elapsed_time"] = end_time - start_time
-                context.benchmark_data["_workflow_start_datetime"] = start_datetime
-                context.benchmark_data["_workflow_start_time"] = start_time
-                context.benchmark_data["_workflow_end_time"] = end_time
+                context.benchmark_data["workflow_start_datetime"] = start_datetime
+                context.benchmark_data["workflow_start_time"] = start_time
+                context.benchmark_data["workflow_end_time"] = end_time
                 return result
             finally:
                 if thread_started:
