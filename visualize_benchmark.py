@@ -506,13 +506,13 @@ def create_benchmark_visualization(json_file):
         xaxis=dict(tickformat='.1f', ticksuffix='s')
     )
 
-    # Add tickformat for all x-axes if nvidia data is present
+    # Add tickformat and link all x-axes if nvidia data is present
     if has_nvidia_data:
         fig.update_layout(
-            xaxis2=dict(tickformat='.1f', ticksuffix='s'),
-            xaxis3=dict(tickformat='.1f', ticksuffix='s'),
-            xaxis4=dict(tickformat='.1f', ticksuffix='s'),
-            xaxis5=dict(tickformat='.1f', ticksuffix='s')
+            xaxis2=dict(tickformat='.1f', ticksuffix='s', matches='x'),
+            xaxis3=dict(tickformat='.1f', ticksuffix='s', matches='x'),
+            xaxis4=dict(tickformat='.1f', ticksuffix='s', matches='x'),
+            xaxis5=dict(tickformat='.1f', ticksuffix='s', matches='x')
         )
 
     return fig
