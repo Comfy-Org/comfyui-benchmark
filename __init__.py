@@ -164,6 +164,9 @@ class ExecutionContext:
             "encode": [],
             "tokenize": [],
         }
+        self.caches_data: dict[str,list[dict[str]]] = {
+            "clean_unused": [],
+        }
         self.startup_args = get_provided_args(comfy.cli_args.args, comfy.cli_args.parser)
         self.config: dict[str, Union[dict[str], Any]] = config
         self.nvidia_smi_data_info: dict[str, str] = {}
@@ -437,6 +440,28 @@ def hook_CFGGuider_sample():
         return wrapper_CFGGuider_sample
     comfy.samplers.CFGGuider.sample = factory_CFGGuider_sample(comfy.samplers.CFGGuider.sample)
 
+def hook_PromptExecutor_caches_clean_unused(executor: execution.PromptExecutor):
+    def factory_cache_clean_unused(func, cache_name: str):
+        def wrapper_cache_clean_unused(*args, **kwargs):
+            global GLOBAL_CONTEXT
+            context = GLOBAL_CONTEXT
+            start_time = time.perf_counter()
+            try:
+                return func(*args, **kwargs)
+            finally:
+                end_time = time.perf_counter()
+                context.caches_data["clean_unused"].append({
+                    "cache_name": cache_name,
+                    "elapsed_time": end_time - start_time,
+                    "start_time": start_time,
+                })
+        return wrapper_cache_clean_unused
+    if not hasattr(executor, "_hooked_by_benchmark"):
+        executor.caches.outputs.clean_unused = factory_cache_clean_unused(executor.caches.outputs.clean_unused, f"outputs:{executor.caches.outputs.__class__.__name__}")
+        executor.caches.ui.clean_unused = factory_cache_clean_unused(executor.caches.ui.clean_unused, f"ui:{executor.caches.ui.__class__.__name__}")
+        executor.caches.objects.clean_unused = factory_cache_clean_unused(executor.caches.objects.clean_unused, f"objects:{executor.caches.objects.__class__.__name__}")
+        setattr(executor, "_hooked_by_benchmark", True)
+
 def hook_PromptExecutor_execute():
     def factory_PromptExecutor_execute(func):
         '''
@@ -454,6 +479,8 @@ def hook_PromptExecutor_execute():
             if context.is_nvidia_smi_thread_enabled() and ENABLE_NVIDIA_SMI_DATA:
                 out_queue, in_queue, thread = create_nvidia_smi_thread(context.get_nvidia_smi_check_interval())
                 thread_started = True
+            # hook caches, but only once per startup of ComfyUI
+            hook_PromptExecutor_caches_clean_unused(args[0])
             try:
                 start_datetime = datetime.datetime.now().strftime("%Y/%m/%d %H:%M:%S.%f")
                 start_time = time.perf_counter()

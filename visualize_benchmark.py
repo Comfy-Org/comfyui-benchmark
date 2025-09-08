@@ -264,7 +264,8 @@ def create_benchmark_visualization(json_file):
         'vae_encode': 'blue',
         'vae_decode': 'red',
         'clip_tokenize': 'magenta',
-        'clip_encode': 'pink'
+        'clip_encode': 'pink',
+        'cache_clean': 'gray'
     }
 
     # Handle both old and new data format
@@ -408,6 +409,21 @@ def create_benchmark_visualization(json_file):
                     'end': end_time,
                     'duration': item['elapsed_time'],
                     'func_name': func_name
+                })
+
+    # Add cache clean operations if they exist (only if duration > 0.01 seconds)
+    if 'caches_data' in data:
+        for item in data['caches_data'].get('clean_unused', []):
+            if item['elapsed_time'] > 0.01:
+                start_time = item['start_time'] - workflow_start
+                end_time = start_time + item['elapsed_time']
+                cache_name = item.get('cache_name', 'Unknown')
+                operations.append({
+                    'type': 'cache_clean',
+                    'name': f'Cache Clean: {cache_name}',
+                    'start': start_time,
+                    'end': end_time,
+                    'duration': item['elapsed_time']
                 })
 
     operations.sort(key=lambda x: x['start'])
