@@ -111,7 +111,7 @@ def merge_nested_dicts(dict1: dict, dict2: dict, copy_dict1=True):
     return merged_dict
 
 def load_config():
-    config = {
+    default_config = {
             "nvidia-smi": {
                 "enable_thread": True,
                 "check_interval": 0.25
@@ -123,13 +123,18 @@ def load_config():
         }
     config_file = os.path.join(os.path.dirname(__file__), "config.yaml")
     if os.path.exists(config_file):
-        with open(config_file, "r") as f:
-            loaded_config = yaml.safe_load(f)
-            config = merge_nested_dicts(config, loaded_config, copy_dict1=True)
+        try:
+            with open(config_file, "r") as f:
+                loaded_config = yaml.safe_load(f)
+                config = merge_nested_dicts(default_config, loaded_config, copy_dict1=True)
+        except yaml.reader.ReaderError as e:
+            logging.error(f"ReaderError loading config.yaml for comfyui-benchmark, will replace with default config.json instead: {e}")
+            config = default_config
         with open(config_file, "w") as f:
             yaml.dump(config, f)
     else:
         logging.info(f"No config.yaml found for comfyui-benchmark, creating default config at {config_file}")
+        config = default_config
         with open(config_file, "w") as f:
             yaml.dump(config, f)
     return config
