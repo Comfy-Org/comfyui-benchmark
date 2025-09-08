@@ -175,7 +175,7 @@ def create_benchmark_visualization(json_file):
                       y0=total_vram, y1=total_vram,
                       line=dict(color="red", dash="dash"),
                       row=vram_row, col=1)
-        fig.add_annotation(text=f"Max VRAM: {total_vram} MB",
+        fig.add_annotation(text=f"Total VRAM: {total_vram} MB",
                           x=max(relative_times), y=total_vram,
                           xanchor="right", yanchor="bottom",
                           showarrow=False,
