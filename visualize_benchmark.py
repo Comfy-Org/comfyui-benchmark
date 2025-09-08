@@ -9,7 +9,8 @@ from plotly.subplots import make_subplots
 
 def parse_nvidia_smi_line(line, workflow_start_datetime, workflow_start_time):
     parts = line.strip().split(', ')
-    if len(parts) < 12:
+    # Total amount may change, but have a sanity check
+    if len(parts) < 2:
         return None
 
     timestamp_dt = datetime.strptime(parts[0], '%Y/%m/%d %H:%M:%S.%f')
