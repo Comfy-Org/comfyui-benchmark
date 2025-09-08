@@ -37,10 +37,10 @@ INFO_NVIDIA_SMI_QUERY = None
 NVIDIA_SMI_ERROR = None
 
 
-nvidia_smi_query = ["timestamp", "memory.used", "memory.total", "utilization.gpu", "utilization.memory", "power.draw", "power.draw.instant", "power.limit", "pcie.link.gen.current", "pcie.link.gen.max", "pcie.link.width.current", "pcie.link.width.max"]
+nvidia_smi_query = ["timestamp", "memory.used", "memory.total", "utilization.gpu", "utilization.memory", "power.draw", "power.draw.instant", "power.limit", "pcie.link.gen.current", "pcie.link.gen.max", "pcie.link.width.current"]
 _nvidia_smi_query_list = ["nvidia-smi", "--query-gpu=" + ",".join(nvidia_smi_query), "--format=csv,noheader,nounits"]
 
-info_nvidia_smi_query = ["name", "count", "driver_version", "display_attached", "display_active", "vbios_version", "power.management"]
+info_nvidia_smi_query = ["name", "count", "driver_version", "display_active", "vbios_version", "power.management"]
 _info_nvidia_smi_query_list = ["nvidia-smi", "--query-gpu=" + ",".join(info_nvidia_smi_query), "--format=csv,noheader,nounits"]
 
 # For NVIDIA devices, during the benchmark setup a process to call nvidia-smi regularly (or with varying intervals)
@@ -48,7 +48,7 @@ def nvidia_smi_thread(out_queue: Queue, in_queue: Queue, check_interval: float):
     logging.info("Starting nvidia-smi thread")
     while True:
         try:
-            out_queue.put(subprocess.check_output(_nvidia_smi_query_list).decode("utf-8"))
+            out_queue.put(call_nvidia_smi(_nvidia_smi_query_list, raise_error=True))
         except Exception as e:
             logging.error(f"Breaking out of nvidia-smi thread due to {e}")
             break
@@ -488,6 +488,28 @@ def initialize_benchmark_hooks():
     hook_VAE()
     hook_CLIP()
 
+def call_nvidia_smi(query_list: list[str], decode=True, set_nvidia_smi_error=False, print_error=False, raise_error=False) -> Union[str, None]:
+    global NVIDIA_SMI_ERROR
+    try:
+        return subprocess.check_output(query_list, stderr=subprocess.STDOUT).decode("utf-8") if decode else subprocess.check_output(query_list)
+    except subprocess.CalledProcessError as e:
+        to_log = f"{e.returncode}:{e.output}"
+        if set_nvidia_smi_error:
+            NVIDIA_SMI_ERROR = to_log
+        if print_error:
+            logging.error(f"Error calling nvidia-smi: {to_log}")
+        if raise_error:
+            raise Exception(to_log)
+        return None
+    except Exception as e:
+        to_log = f"{e}"
+        if set_nvidia_smi_error:
+            NVIDIA_SMI_ERROR = to_log
+        if print_error:
+            logging.error(f"Error calling nvidia-smi: {to_log}")
+        if raise_error:
+            raise Exception(to_log)
+        return None
 
 class BenchmarkExtension(ComfyExtension):
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
@@ -496,10 +518,12 @@ class BenchmarkExtension(ComfyExtension):
         if comfy.model_management.is_nvidia():
             # get current memory usage
             try:
-                INITIAL_NVIDIA_SMI_QUERY = subprocess.check_output(_nvidia_smi_query_list).decode("utf-8")
-                INFO_NVIDIA_SMI_QUERY = subprocess.check_output(_info_nvidia_smi_query_list).decode("utf-8")
-                ENABLE_NVIDIA_SMI_DATA = True
+                INITIAL_NVIDIA_SMI_QUERY = call_nvidia_smi(_nvidia_smi_query_list, set_nvidia_smi_error=True, print_error=True)
+                INFO_NVIDIA_SMI_QUERY = call_nvidia_smi(_info_nvidia_smi_query_list, set_nvidia_smi_error=True, print_error=True)
+                if INITIAL_NVIDIA_SMI_QUERY is not None and INFO_NVIDIA_SMI_QUERY is not None:
+                    ENABLE_NVIDIA_SMI_DATA = True
             except Exception as e:
+                # NOTE: this should never happen, but just in case
                 logging.error(f"Error getting initial nvidia smi query: {e}")
                 NVIDIA_SMI_ERROR = f"{e}"
         return []
