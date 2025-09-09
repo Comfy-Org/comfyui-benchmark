@@ -159,6 +159,7 @@ class ExecutionContext:
             "load_torch_file": [],
             "load_state_dict": [],
             "model_load": [],
+            "model_unload": [],
         }
         self.sampling_data: list[dict[str]] = []
         self.vae_data: dict[str,list[dict[str]]] = {
@@ -288,7 +289,7 @@ def hook_VAE():
     hook_VAE_decode()
 
 def hook_LoadedModel_model_load():
-    def factory_LoadedModel_model_load(func):
+    def factory_LoadedModel_model_load(func, category: str):
         def wrapper_LoadedModel_model_load(*args, **kwargs):
             global GLOBAL_CONTEXT
             context = GLOBAL_CONTEXT
@@ -301,14 +302,15 @@ def hook_LoadedModel_model_load():
                 raise
             finally:
                 end_time = time.perf_counter()
-                context.load_data["model_load"].append({
+                context.load_data[category].append({
                     "model": str(args[0].model.model.__class__.__name__),
                     "elapsed_time": end_time - start_time,
                     "start_time": start_time,
                     "valid_timing": valid_timing
                 })
         return wrapper_LoadedModel_model_load
-    comfy.model_management.LoadedModel.model_load = factory_LoadedModel_model_load(comfy.model_management.LoadedModel.model_load)
+    comfy.model_management.LoadedModel.model_load = factory_LoadedModel_model_load(comfy.model_management.LoadedModel.model_load, "model_load")
+    comfy.model_management.LoadedModel.model_unload = factory_LoadedModel_model_load(comfy.model_management.LoadedModel.model_unload, "model_unload")
 
 def hook_load_state_dict():
     def factory_load_state_dict(func, func_name: str):
