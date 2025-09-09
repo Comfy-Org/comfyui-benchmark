@@ -257,6 +257,7 @@ def create_benchmark_visualization(json_file):
     colors = {
         'load_torch_file': 'purple',
         'model_load': 'orange',
+        'model_unload': 'goldenrod',
         'load_state_dict': 'brown',
         'load_diffusion_model': 'indigo',
         'sampling': 'green',
@@ -291,6 +292,20 @@ def create_benchmark_visualization(json_file):
                 operations.append({
                     'type': 'model_load',
                     'name': f'Model Load: {item["model"]}',
+                    'start': start_time,
+                    'end': end_time,
+                    'duration': item['elapsed_time']
+                })
+
+        # New model_unload operations
+        for item in data['load_data'].get('model_unload', []):
+            if item['valid_timing']:
+                start_time = item['start_time'] - workflow_start
+                end_time = start_time + item['elapsed_time']
+                model_name = item.get('model', 'Unknown')
+                operations.append({
+                    'type': 'model_unload',
+                    'name': f'Model Unload: {model_name}',
                     'start': start_time,
                     'end': end_time,
                     'duration': item['elapsed_time']
