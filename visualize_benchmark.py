@@ -257,7 +257,7 @@ def create_benchmark_visualization(json_file):
     colors = {
         'load_torch_file': 'purple',
         'model_load': 'orange',
-        'model_unload': 'goldenrod',
+        'model_unload': 'black',
         'load_state_dict': 'brown',
         'load_diffusion_model': 'indigo',
         'sampling': 'green',
