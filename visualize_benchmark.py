@@ -17,6 +17,8 @@ def parse_nvidia_smi_line(line, workflow_start_datetime, workflow_start_time):
     # Convert to relative seconds from workflow start
     time_delta = timestamp_dt - workflow_start_datetime
     relative_time = time_delta.total_seconds()
+    # Power limit might be [N/A], so need to account for that
+    power_limit = float(parts[7]) if parts[7] != '[N/A]' else None
 
     return {
         'timestamp': timestamp_dt,
@@ -27,7 +29,7 @@ def parse_nvidia_smi_line(line, workflow_start_datetime, workflow_start_time):
         'memory_utilization': int(parts[4]),
         'power_draw': float(parts[5]),
         'power_instant': float(parts[6]),
-        'power_limit': float(parts[7]),
+        'power_limit': power_limit,
     }
 
 
