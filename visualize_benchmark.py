@@ -33,6 +33,26 @@ def parse_nvidia_smi_line(line, workflow_start_datetime, workflow_start_time):
     }
 
 
+def parse_psutil_line(line, workflow_start_time):
+    """Parse psutil data line: 'relative_seconds,used_memory(bytes),total_memory(bytes)'"""
+    parts = line.strip().split(',')
+    if len(parts) != 3:
+        return None
+    
+    try:
+        relative_time = float(parts[0]) - workflow_start_time
+        used_memory_mb = int(parts[1]) / (1024 * 1024)  # Convert bytes to MB
+        total_memory_mb = int(parts[2]) / (1024 * 1024)  # Convert bytes to MB
+        
+        return {
+            'relative_time': relative_time,
+            'used_memory': used_memory_mb,
+            'total_memory': total_memory_mb
+        }
+    except (ValueError, IndexError):
+        return None
+
+
 def create_benchmark_visualization(json_file):
     with open(json_file, 'r') as f:
         data = json.load(f)
@@ -55,8 +75,17 @@ def create_benchmark_visualization(json_file):
             if parsed:
                 nvidia_smi_data.append(parsed)
 
+    # Parse psutil data if it exists
+    psutil_data = []
+    if 'psutil_data' in data and data['psutil_data']:
+        for line in data['psutil_data']:
+            parsed = parse_psutil_line(line, workflow_start)
+            if parsed:
+                psutil_data.append(parsed)
+
     # Determine which graphs to show based on available data
     has_nvidia_data = len(nvidia_smi_data) > 0
+    has_psutil_data = len(psutil_data) > 0
 
     # Create device info table data
     device_table_headers = ['Property', 'Value']
@@ -95,6 +124,22 @@ def create_benchmark_visualization(json_file):
                 except (ValueError, IndexError):
                     pass
     
+    # Parse initial RAM usage if available
+    initial_ram = None
+    if 'psutil_data_info' in data:
+        psutil_info = data['psutil_data_info']
+        if 'initial_psutil_query' in psutil_info:
+            initial_query = psutil_info['initial_psutil_query']
+            if initial_query and initial_query.strip():
+                # Format: 'relative_seconds,used_memory(bytes),total_memory(bytes)'
+                parts = initial_query.strip().split(',')
+                if len(parts) == 3:
+                    try:
+                        initial_ram = int(parts[1]) / (1024 * 1024)  # Convert bytes to MB
+                    except (ValueError, IndexError):
+                        pass
+    
+    # Prepare data for graphs
     if has_nvidia_data:
         # Use relative times starting from 0
         relative_times = [d['relative_time'] for d in nvidia_smi_data]
@@ -104,7 +149,34 @@ def create_benchmark_visualization(json_file):
         power_instant = [d['power_instant'] for d in nvidia_smi_data]  # Keep instant power for hover
         power_limit = nvidia_smi_data[0]['power_limit'] if nvidia_smi_data else None
 
-        # Create subplot with all graphs including device info table
+    if has_psutil_data:
+        psutil_times = [d['relative_time'] for d in psutil_data]
+        ram_used = [d['used_memory'] for d in psutil_data]
+        ram_total = psutil_data[0]['total_memory'] if psutil_data else 0
+
+    # Create subplot based on available data
+    if has_nvidia_data and has_psutil_data:
+        # Both NVIDIA and psutil data available
+        fig = make_subplots(
+            rows=6, cols=1,
+            shared_xaxes=False,
+            vertical_spacing=0.05,
+            subplot_titles=('Device Information', 'VRAM Usage', 'RAM Usage', 'GPU Utilization', 'Power Usage', 'Workflow Operations Timeline'),
+            row_heights=[0.12, 0.25, 0.14, 0.14, 0.14, 0.21],
+            specs=[[{"type": "table"}],
+                   [{"type": "scatter"}],
+                   [{"type": "scatter"}],
+                   [{"type": "scatter"}],
+                   [{"type": "scatter"}],
+                   [{"type": "scatter"}]]
+        )
+        operations_row = 6
+        vram_row = 2
+        ram_row = 3
+        gpu_row = 4
+        power_row = 5
+    elif has_nvidia_data:
+        # Only NVIDIA data available
         fig = make_subplots(
             rows=5, cols=1,
             shared_xaxes=False,
@@ -121,8 +193,22 @@ def create_benchmark_visualization(json_file):
         vram_row = 2
         gpu_row = 3
         power_row = 4
+    elif has_psutil_data:
+        # Only psutil data available
+        fig = make_subplots(
+            rows=3, cols=1,
+            shared_xaxes=False,
+            vertical_spacing=0.08,
+            subplot_titles=('Device Information', 'RAM Usage', 'Workflow Operations Timeline'),
+            row_heights=[0.25, 0.35, 0.40],
+            specs=[[{"type": "table"}],
+                   [{"type": "scatter"}],
+                   [{"type": "scatter"}]]
+        )
+        operations_row = 3
+        ram_row = 2
     else:
-        # Create subplot with device info and operations timeline only
+        # No monitoring data available
         fig = make_subplots(
             rows=2, cols=1,
             shared_xaxes=False,
@@ -196,6 +282,50 @@ def create_benchmark_visualization(json_file):
                               showarrow=False,
                               row=vram_row, col=1)
 
+    # Add RAM Usage if psutil data is available
+    if has_psutil_data:
+        fig.add_trace(
+            go.Scatter(
+                x=psutil_times,
+                y=ram_used,
+                name='RAM Used (MB)',
+                mode='lines',
+                line=dict(color='darkgreen', width=2),
+                fill='tozeroy',
+                hovertemplate='<b>Time</b>: %{x:.2f}s<br>' +
+                              '<b>RAM</b>: %{y:.0f} MB<br>' +
+                              '<b>Percentage</b>: %{customdata:.1f}%<extra></extra>',
+                customdata=[(m/ram_total)*100 for m in ram_used]
+            ),
+            row=ram_row, col=1
+        )
+
+        # Add horizontal line for total RAM
+        fig.add_shape(type="line",
+                      x0=min(psutil_times), x1=max(psutil_times),
+                      y0=ram_total, y1=ram_total,
+                      line=dict(color="red", dash="dash"),
+                      row=ram_row, col=1)
+        fig.add_annotation(text=f"Total RAM: {ram_total:.0f} MB",
+                          x=max(psutil_times), y=ram_total,
+                          xanchor="right", yanchor="bottom",
+                          showarrow=False,
+                          row=ram_row, col=1)
+        
+        # Add initial RAM usage line if available
+        if initial_ram is not None:
+            fig.add_shape(type="line",
+                          x0=min(psutil_times), x1=max(psutil_times),
+                          y0=initial_ram, y1=initial_ram,
+                          line=dict(color="darkgreen", dash="dot"),
+                          row=ram_row, col=1)
+            fig.add_annotation(text=f"Initial RAM: {initial_ram:.0f} MB",
+                              x=max(psutil_times) * 0.95, y=initial_ram,
+                              xanchor="right", yanchor="top" if initial_ram < ram_total/2 else "bottom",
+                              showarrow=False,
+                              row=ram_row, col=1)
+
+    if has_nvidia_data:
         # Add GPU Utilization
         fig.add_trace(
             go.Scatter(
@@ -268,7 +398,9 @@ def create_benchmark_visualization(json_file):
         'vae_decode': 'red',
         'clip_tokenize': 'magenta',
         'clip_encode': 'pink',
-        'cache_clean': 'gray'
+        'cache_clean': 'gray',
+        'patch_model': 'slategray',
+        'unpatch_model': 'slategray'
     }
 
     # Handle both old and new data format
@@ -341,6 +473,34 @@ def create_benchmark_visualization(json_file):
                     'end': end_time,
                     'duration': item['elapsed_time'],
                     'func_name': func_name
+                })
+
+        # New patch_model operations (only if duration > 0.01 seconds)
+        for item in data['load_data'].get('patch_model', []):
+            if item['valid_timing'] and item['elapsed_time'] > 0.01:
+                start_time = item['start_time'] - workflow_start
+                end_time = start_time + item['elapsed_time']
+                model_name = item.get('model', 'Unknown')
+                operations.append({
+                    'type': 'patch_model',
+                    'name': f'Patch Model: {model_name}',
+                    'start': start_time,
+                    'end': end_time,
+                    'duration': item['elapsed_time']
+                })
+
+        # New unpatch_model operations (only if duration > 0.01 seconds)
+        for item in data['load_data'].get('unpatch_model', []):
+            if item['valid_timing'] and item['elapsed_time'] > 0.01:
+                start_time = item['start_time'] - workflow_start
+                end_time = start_time + item['elapsed_time']
+                model_name = item.get('model', 'Unknown')
+                operations.append({
+                    'type': 'unpatch_model',
+                    'name': f'Unpatch Model: {model_name}',
+                    'start': start_time,
+                    'end': end_time,
+                    'duration': item['elapsed_time']
                 })
 
     for item in data['sampling_data']:
@@ -523,6 +683,8 @@ def create_benchmark_visualization(json_file):
         fig.update_yaxes(title_text="VRAM (MB)", row=vram_row, col=1)
         fig.update_yaxes(title_text="GPU %", row=gpu_row, col=1, range=[0, 105])  # Set fixed range for GPU utilization
         fig.update_yaxes(title_text="Power (W)", row=power_row, col=1)
+    if has_psutil_data:
+        fig.update_yaxes(title_text="RAM (MB)", row=ram_row, col=1)
     # Center the workflow operations timeline
     fig.update_yaxes(showticklabels=False, row=operations_row, col=1, range=[-0.5, 0.5])
 
@@ -532,21 +694,38 @@ def create_benchmark_visualization(json_file):
         hovermode='x',
         legend=dict(
             orientation="h",
-            yanchor="bottom",
-            y=-0.1,
+            yanchor="top",
+            y=-0.08,
             xanchor="center",
             x=0.5
         ),
+        margin=dict(b=120),  # Add bottom margin to prevent clipping
         xaxis=dict(tickformat='.1f', ticksuffix='s')
     )
 
-    # Add tickformat and link all x-axes if nvidia data is present
-    if has_nvidia_data:
+    # Add tickformat and link all x-axes based on available data
+    if has_nvidia_data and has_psutil_data:
+        # All 6 rows with data
+        fig.update_layout(
+            xaxis2=dict(tickformat='.1f', ticksuffix='s', matches='x'),
+            xaxis3=dict(tickformat='.1f', ticksuffix='s', matches='x'),
+            xaxis4=dict(tickformat='.1f', ticksuffix='s', matches='x'),
+            xaxis5=dict(tickformat='.1f', ticksuffix='s', matches='x'),
+            xaxis6=dict(tickformat='.1f', ticksuffix='s', matches='x')
+        )
+    elif has_nvidia_data:
+        # 5 rows with nvidia data only
         fig.update_layout(
             xaxis2=dict(tickformat='.1f', ticksuffix='s', matches='x'),
             xaxis3=dict(tickformat='.1f', ticksuffix='s', matches='x'),
             xaxis4=dict(tickformat='.1f', ticksuffix='s', matches='x'),
             xaxis5=dict(tickformat='.1f', ticksuffix='s', matches='x')
+        )
+    elif has_psutil_data:
+        # 3 rows with psutil data only
+        fig.update_layout(
+            xaxis2=dict(tickformat='.1f', ticksuffix='s', matches='x'),
+            xaxis3=dict(tickformat='.1f', ticksuffix='s', matches='x')
         )
 
     return fig
