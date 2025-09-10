@@ -77,9 +77,6 @@ python visualize_benchmark.py benchmark_20250904_140902.json --save-html report.
 
 # Compare multiple benchmarks and save as HTML
 python visualize_benchmark.py benchmark1.json benchmark2.json --save-html comparison.html
-
-# Compare all benchmark files in current directory
-python visualize_benchmark.py benchmark_*.json --save-html all_benchmarks_comparison.html
 ```
 
 ### Visualization Features
