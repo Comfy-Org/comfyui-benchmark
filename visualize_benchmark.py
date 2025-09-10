@@ -801,12 +801,21 @@ def create_benchmark_comparison(json_files):
     num_benchmarks = len(benchmarks)
     subplot_titles = [f"{b['name']} - {b['workflow_name']}" for b in benchmarks]
     
+    # Calculate vertical spacing as a fraction to maintain constant pixel spacing
+    # We want about 40 pixels between subplots to avoid title overlap
+    fixed_height_per_benchmark = 180  # Must match the value used later
+    total_height = 100 + (fixed_height_per_benchmark * num_benchmarks)
+    desired_pixel_spacing = 40
+    # vertical_spacing is a fraction of the subplot area (not total height)
+    # subplot area = total_height - margins - title space
+    subplot_area = total_height - 100  # Approximate usable area
+    vertical_spacing_fraction = desired_pixel_spacing / subplot_area if num_benchmarks > 1 else 0
+    
     fig = make_subplots(
         rows=num_benchmarks, cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.08,  # Increased from 0.05 to give more space between subplots
-        subplot_titles=subplot_titles,
-        row_heights=[1.0/num_benchmarks] * num_benchmarks
+        vertical_spacing=min(vertical_spacing_fraction, 0.1),  # Cap at 0.1 to avoid issues
+        subplot_titles=subplot_titles
     )
     
     # Operation type colors (shared across all benchmarks)
@@ -848,9 +857,10 @@ def create_benchmark_comparison(json_files):
             op['nesting_level'] = len(containing_ops)
             op['index'] = i
         
-        # Base sizes - increased to be more similar to single visualization
-        base_width = 60  # Increased from 40 to be closer to single viz (80)
-        width_reduction_per_level = 12  # Increased from 8 to maintain proportions
+        # Base sizes - keep consistent regardless of number of benchmarks
+        # Use same sizes as single visualization to maintain consistency
+        base_width = 80  # Same as single visualization
+        width_reduction_per_level = 15  # Same as single visualization
         
         y_position = 0
         for op in operations:
@@ -900,7 +910,7 @@ def create_benchmark_comparison(json_files):
         fig.add_shape(
             type="line",
             x0=benchmark['duration'], x1=benchmark['duration'],
-            y0=-0.5, y1=0.5,
+            y0=-0.6, y1=0.6,  # Match the new y_range
             line=dict(color="black", dash="dash", width=2),
             row=row_idx, col=1
         )
@@ -909,7 +919,7 @@ def create_benchmark_comparison(json_files):
         fig.add_annotation(
             text=f"Total: {benchmark['duration']:.2f}s",
             x=benchmark['duration'],
-            y=0.4,
+            y=0.45,  # Adjusted for new y_range
             xanchor="right",  # Changed from "left" to "right"
             yanchor="bottom",
             showarrow=False,
@@ -921,23 +931,32 @@ def create_benchmark_comparison(json_files):
     fig.update_xaxes(title_text="Time (seconds from start)", row=num_benchmarks, col=1, range=[0, max_time])
     
     # Center all workflow timelines and set same x-axis range for all
+    # Set y-axis range appropriate for bar thickness
+    y_range = [-0.6, 0.6]  # Slightly larger than original to accommodate thick bars without excess space
     for row in range(1, num_benchmarks + 1):
-        fig.update_yaxes(showticklabels=False, row=row, col=1, range=[-0.5, 0.5])
+        fig.update_yaxes(showticklabels=False, row=row, col=1, range=y_range)
         if row < num_benchmarks:  # Don't duplicate for the last row (already set above)
             fig.update_xaxes(range=[0, max_time], row=row, col=1)
     
+    # Fixed height per benchmark subplot to maintain consistent visual size
+    fixed_height_per_benchmark = 180  # Reasonable height for each benchmark subplot
+    # Calculate legend position to keep it close to the bottom graph
+    # The y position needs to be calculated based on the number of benchmarks
+    # to maintain a constant distance from the last subplot
+    legend_y_position = -60 / (100 + (fixed_height_per_benchmark * num_benchmarks))
+    
     fig.update_layout(
         title="ComfyUI Benchmark Comparison",
-        height=200 + (150 * num_benchmarks),  # Reverted to original height
+        height=100 + (fixed_height_per_benchmark * num_benchmarks),  # Fixed height per benchmark
         hovermode='x',  # Changed from 'x unified' to match single visualization
         legend=dict(
             orientation="h",
             yanchor="top",
-            y=-0.12,  # Moved even further down to fully avoid clipping
+            y=legend_y_position,  # Dynamic position based on total height
             xanchor="center",
             x=0.5
         ),
-        margin=dict(t=50, b=160, l=50, r=50),  # Slightly increased bottom margin
+        margin=dict(t=50, b=120, l=50, r=50),  # Reduced bottom margin since legend is closer
         xaxis=dict(tickformat='.1f', ticksuffix='s')
     )
     
@@ -981,7 +1000,8 @@ if __name__ == "__main__":
         print(f"Saving image to: {image_path}")
         # For comparison, adjust height dynamically
         if len(args.benchmark_file) > 1:
-            height = 200 + (150 * len(args.benchmark_file))
+            fixed_height_per_benchmark = 180  # Same as in create_benchmark_comparison
+            height = 100 + (fixed_height_per_benchmark * len(args.benchmark_file))
             fig.write_image(image_path, width=1920, height=height, scale=2)
         else:
             fig.write_image(image_path, width=1920, height=1080, scale=2)
