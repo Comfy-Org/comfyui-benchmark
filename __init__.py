@@ -8,6 +8,7 @@ import sys
 import json
 import argparse
 import yaml
+import psutil
 
 from comfy_api.latest import ComfyExtension, io
 import execution
@@ -36,6 +37,8 @@ INITIAL_NVIDIA_SMI_QUERY = None
 INFO_NVIDIA_SMI_QUERY = None
 NVIDIA_SMI_ERROR = None
 
+INITIAL_PSUTIL_QUERY = None
+psutil_query = ["timestamp", "used", "total"]
 
 nvidia_smi_query = ["timestamp", "memory.used", "memory.total", "utilization.gpu", "utilization.memory", "power.draw", "power.draw.instant", "power.limit", "pcie.link.gen.current", "pcie.link.gen.max", "pcie.link.width.current"]
 _nvidia_smi_query_list = ["nvidia-smi", "--query-gpu=" + ",".join(nvidia_smi_query), "--format=csv,noheader,nounits"]
@@ -49,6 +52,7 @@ def nvidia_smi_thread(out_queue: Queue, in_queue: Queue, check_interval: float):
     while True:
         try:
             out_queue.put(call_nvidia_smi(_nvidia_smi_query_list, raise_error=True))
+            out_queue.put(call_psutil())
         except Exception as e:
             logging.error(f"Breaking out of nvidia-smi thread due to {e}")
             break
@@ -160,6 +164,8 @@ class ExecutionContext:
             "load_state_dict": [],
             "model_load": [],
             "model_unload": [],
+            "patch_model": [],
+            "unpatch_model": [],
         }
         self.sampling_data: list[dict[str]] = []
         self.vae_data: dict[str,list[dict[str]]] = {
@@ -177,7 +183,10 @@ class ExecutionContext:
         self.config: dict[str, Union[dict[str], Any]] = config
         self.nvidia_smi_data_info: dict[str, str] = {}
         self.nvidia_smi_data: list[str] = []
+        self.psutil_data_info: dict[str, str] = {}
+        self.psutil_data: list[str] = []
         self._create_nvidia_smi_data_info()
+        self._create_psutil_data_info()
 
     def is_nvidia_smi_thread_enabled(self):
         return self.config.get("nvidia-smi", {}).get("enable_thread", False)
@@ -194,6 +203,10 @@ class ExecutionContext:
         self.nvidia_smi_data_info["nvidia_smi_query_params"] = ", ".join(nvidia_smi_query)
         self.nvidia_smi_data_info["initial_nvidia_smi_query"] = INITIAL_NVIDIA_SMI_QUERY
         self.nvidia_smi_data_info["nvidia_smi_error"] = NVIDIA_SMI_ERROR
+
+    def _create_psutil_data_info(self):
+        self.psutil_data_info["psutil_query_params"] = ", ".join(psutil_query)
+        self.psutil_data_info["initial_psutil_query"] = INITIAL_PSUTIL_QUERY
 
     def save_to_log_file(self):
         output_dir = folder_paths.get_output_directory()
@@ -289,7 +302,7 @@ def hook_VAE():
     hook_VAE_decode()
 
 def hook_LoadedModel_model_load():
-    def factory_LoadedModel_model_load(func, category: str):
+    def factory_LoadedModel_model_load(func, category: str, model_nest: int=2):
         def wrapper_LoadedModel_model_load(*args, **kwargs):
             global GLOBAL_CONTEXT
             context = GLOBAL_CONTEXT
@@ -303,7 +316,7 @@ def hook_LoadedModel_model_load():
             finally:
                 end_time = time.perf_counter()
                 context.load_data[category].append({
-                    "model": str(args[0].model.model.__class__.__name__),
+                    "model": str(args[0].model.model.__class__.__name__ if model_nest == 2 else args[0].model.__class__.__name__),
                     "elapsed_time": end_time - start_time,
                     "start_time": start_time,
                     "valid_timing": valid_timing
@@ -311,6 +324,8 @@ def hook_LoadedModel_model_load():
         return wrapper_LoadedModel_model_load
     comfy.model_management.LoadedModel.model_load = factory_LoadedModel_model_load(comfy.model_management.LoadedModel.model_load, "model_load")
     comfy.model_management.LoadedModel.model_unload = factory_LoadedModel_model_load(comfy.model_management.LoadedModel.model_unload, "model_unload")
+    comfy.model_patcher.ModelPatcher.patch_model = factory_LoadedModel_model_load(comfy.model_patcher.ModelPatcher.patch_model, "patch_model", model_nest=1)
+    comfy.model_patcher.ModelPatcher.unpatch_model = factory_LoadedModel_model_load(comfy.model_patcher.ModelPatcher.unpatch_model, "unpatch_model", model_nest=1)
 
 def hook_load_state_dict():
     def factory_load_state_dict(func, func_name: str):
@@ -504,7 +519,11 @@ def hook_PromptExecutor_execute():
                         in_queue.put("stop")
                         thread.join()
                         while not out_queue.empty():
-                            context.nvidia_smi_data.append(out_queue.get_nowait())
+                            item: str = out_queue.get_nowait()
+                            if item.startswith("psutil:"):
+                                context.psutil_data.append(item.split(":")[1])
+                            else:
+                                context.nvidia_smi_data.append(item)
                     except Exception as e:
                         logging.error(f"Error stopping nvidia-smi thread: {e}")
                 context.save_to_log_file()
@@ -545,10 +564,16 @@ def call_nvidia_smi(query_list: list[str], decode=True, set_nvidia_smi_error=Fal
             raise Exception(to_log)
         return None
 
+def call_psutil(include_prefix=True):
+    memory_info = psutil.virtual_memory()
+    prefix = "psutil:" if include_prefix else ""
+    return f"{prefix}{time.perf_counter()},{memory_info.used},{memory_info.total}"
+
 class BenchmarkExtension(ComfyExtension):
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
-        global INITIAL_NVIDIA_SMI_QUERY, ENABLE_NVIDIA_SMI_DATA, NVIDIA_SMI_ERROR, INFO_NVIDIA_SMI_QUERY
+        global INITIAL_NVIDIA_SMI_QUERY, ENABLE_NVIDIA_SMI_DATA, NVIDIA_SMI_ERROR, INFO_NVIDIA_SMI_QUERY, INITIAL_PSUTIL_QUERY
         initialize_benchmark_hooks()
+        INITIAL_PSUTIL_QUERY = call_psutil(include_prefix=False)
         if comfy.model_management.is_nvidia():
             # get current memory usage
             try:
