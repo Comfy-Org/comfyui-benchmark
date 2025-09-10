@@ -1007,6 +1007,9 @@ if __name__ == "__main__":
             image_path = f"{base_name}_visualization.png"
         else:
             image_path = args.save_image
+            # Add .png extension if no extension is present
+            if not os.path.splitext(image_path)[1]:
+                image_path += '.png'
         print(f"Saving image to: {image_path}")
         # For comparison, adjust height dynamically
         if len(args.benchmark_file) > 1:
@@ -1022,6 +1025,9 @@ if __name__ == "__main__":
             html_path = f"{base_name}_visualization.html"
         else:
             html_path = args.save_html
+            # Add .html extension if no extension is present
+            if not os.path.splitext(html_path)[1]:
+                html_path += '.html'
         print(f"Saving HTML to: {html_path}")
         fig.write_html(html_path)
     
