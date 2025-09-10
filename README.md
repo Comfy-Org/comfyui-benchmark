@@ -27,7 +27,8 @@ The `config.yaml` file contains the following settings to control benchmark data
 
 The benchmark results can be visualized using the included `visualize_benchmark.py` script.
 
-<img width="3840" height="2160" alt="benchmark_20250904_144616_visualization" src="https://github.com/user-attachments/assets/34f860d5-0d74-49da-87fb-f92a4f9eb271" />
+<img width="3840" height="2160" alt="use-in-readmy" src="https://github.com/user-attachments/assets/7f71f195-5032-4280-9494-2501237b98cc" />
+
 
 ### Usage
 
