@@ -53,6 +53,215 @@ def parse_psutil_line(line, workflow_start_time):
         return None
 
 
+def extract_operations_from_data(data, workflow_start):
+    """Extract operations data from benchmark data for timeline visualization."""
+    operations = []
+    
+    # Handle both old and new data format
+    if 'load_data' in data:
+        # New format - load_data dictionary
+        for item in data['load_data'].get('load_torch_file', []):
+            if item['valid_timing']:
+                start_time = item['start_time'] - workflow_start
+                end_time = start_time + item['elapsed_time']
+                model_name = item['ckpt'].split('\\')[-1].split('.')[0]
+                operations.append({
+                    'type': 'load_torch_file',
+                    'name': f'Load: {model_name}',
+                    'start': start_time,
+                    'end': end_time,
+                    'duration': item['elapsed_time']
+                })
+
+        for item in data['load_data'].get('model_load', []):
+            if item['valid_timing']:
+                start_time = item['start_time'] - workflow_start
+                end_time = start_time + item['elapsed_time']
+                operations.append({
+                    'type': 'model_load',
+                    'name': f'Model Load: {item["model"]}',
+                    'start': start_time,
+                    'end': end_time,
+                    'duration': item['elapsed_time']
+                })
+
+        # New model_unload operations
+        for item in data['load_data'].get('model_unload', []):
+            if item['valid_timing']:
+                start_time = item['start_time'] - workflow_start
+                end_time = start_time + item['elapsed_time']
+                model_name = item.get('model', 'Unknown')
+                operations.append({
+                    'type': 'model_unload',
+                    'name': f'Model Unload: {model_name}',
+                    'start': start_time,
+                    'end': end_time,
+                    'duration': item['elapsed_time']
+                })
+
+        # New load_state_dict operations
+        for item in data['load_data'].get('load_state_dict', []):
+            if item['valid_timing']:
+                start_time = item['start_time'] - workflow_start
+                end_time = start_time + item['elapsed_time']
+                func_name = item.get('func_name', 'load_state_dict')
+                operations.append({
+                    'type': 'load_state_dict',
+                    'name': f'Load State Dict: {func_name}',
+                    'start': start_time,
+                    'end': end_time,
+                    'duration': item['elapsed_time'],
+                    'func_name': func_name
+                })
+
+        # New load_diffusion_model operations
+        for item in data['load_data'].get('load_diffusion_model', []):
+            if item['valid_timing']:
+                start_time = item['start_time'] - workflow_start
+                end_time = start_time + item['elapsed_time']
+                func_name = item.get('func_name', 'load_diffusion_model')
+                operations.append({
+                    'type': 'load_diffusion_model',
+                    'name': f'Load Diffusion Model: {func_name}',
+                    'start': start_time,
+                    'end': end_time,
+                    'duration': item['elapsed_time'],
+                    'func_name': func_name
+                })
+
+        # New patch_model operations (only if duration > 0.01 seconds)
+        for item in data['load_data'].get('patch_model', []):
+            if item['valid_timing'] and item['elapsed_time'] > 0.01:
+                start_time = item['start_time'] - workflow_start
+                end_time = start_time + item['elapsed_time']
+                model_name = item.get('model', 'Unknown')
+                operations.append({
+                    'type': 'patch_model',
+                    'name': f'Patch Model: {model_name}',
+                    'start': start_time,
+                    'end': end_time,
+                    'duration': item['elapsed_time']
+                })
+
+        # New unpatch_model operations (only if duration > 0.01 seconds)
+        for item in data['load_data'].get('unpatch_model', []):
+            if item['valid_timing'] and item['elapsed_time'] > 0.01:
+                start_time = item['start_time'] - workflow_start
+                end_time = start_time + item['elapsed_time']
+                model_name = item.get('model', 'Unknown')
+                operations.append({
+                    'type': 'unpatch_model',
+                    'name': f'Unpatch Model: {model_name}',
+                    'start': start_time,
+                    'end': end_time,
+                    'duration': item['elapsed_time']
+                })
+
+    for item in data.get('sampling_data', []):
+        # Convert perf_counter times to relative seconds from workflow start
+        start_time = item['cfg_guider_start_time'] - workflow_start
+        end_time = item['cfg_guider_end_time'] - workflow_start
+        operations.append({
+            'type': 'sampling',
+            'name': f'Sampling: {item["model"]} ({item["steps"]} steps)',
+            'start': start_time,
+            'end': end_time,
+            'duration': item['cfg_guider_elapsed_time']
+        })
+
+        # Add sampler_sample if it exists
+        if 'sampler_sample_start_time' in item and 'sampler_sample_end_time' in item:
+            start_time = item['sampler_sample_start_time'] - workflow_start
+            end_time = item['sampler_sample_end_time'] - workflow_start
+            avg_iter_time = item.get('average_iteration_time', 0)
+            iter_per_sec = 1.0 / avg_iter_time if avg_iter_time > 0 else 0
+            operations.append({
+                'type': 'sampler_sample',
+                'name': f'Sampler Sample: {item["model"]} ({item["steps"]} steps)',
+                'start': start_time,
+                'end': end_time,
+                'duration': item['sampler_sample_elapsed_time'],
+                'iter_per_sec': iter_per_sec,
+                'sec_per_iter': avg_iter_time
+            })
+
+    if 'vae_data' in data:
+        for item in data['vae_data'].get('encode', []):
+            if item['valid_timing']:
+                # Convert perf_counter times to relative seconds from workflow start
+                start_time = item['start_time'] - workflow_start
+                end_time = start_time + item['elapsed_time']
+                operations.append({
+                    'type': 'vae_encode',
+                    'name': 'VAE Encode',
+                    'start': start_time,
+                    'end': end_time,
+                    'duration': item['elapsed_time']
+                })
+
+        for item in data['vae_data'].get('decode', []):
+            if item['valid_timing']:
+                # Convert perf_counter times to relative seconds from workflow start
+                start_time = item['start_time'] - workflow_start
+                end_time = start_time + item['elapsed_time']
+                operations.append({
+                    'type': 'vae_decode',
+                    'name': 'VAE Decode',
+                    'start': start_time,
+                    'end': end_time,
+                    'duration': item['elapsed_time']
+                })
+
+    # Add clip tokenize operations if they exist
+    if 'clip_data' in data:
+        for item in data['clip_data'].get('tokenize', []):
+            if item['valid_timing']:
+                start_time = item['start_time'] - workflow_start
+                end_time = start_time + item['elapsed_time']
+                model_name = item.get('model', 'CLIP')
+                operations.append({
+                    'type': 'clip_tokenize',
+                    'name': f'CLIP Tokenize: {model_name}',
+                    'start': start_time,
+                    'end': end_time,
+                    'duration': item['elapsed_time']
+                })
+
+        # Add clip encode operations
+        for item in data['clip_data'].get('encode', []):
+            if item['valid_timing']:
+                start_time = item['start_time'] - workflow_start
+                end_time = start_time + item['elapsed_time']
+                model_name = item.get('model', 'CLIP')
+                func_name = item.get('func_name', '')
+                operations.append({
+                    'type': 'clip_encode',
+                    'name': f'CLIP Encode: {model_name}',
+                    'start': start_time,
+                    'end': end_time,
+                    'duration': item['elapsed_time'],
+                    'func_name': func_name
+                })
+
+    # Add cache clean operations if they exist (only if duration > 0.01 seconds)
+    if 'caches_data' in data:
+        for item in data['caches_data'].get('clean_unused', []):
+            if item['elapsed_time'] > 0.01:
+                start_time = item['start_time'] - workflow_start
+                end_time = start_time + item['elapsed_time']
+                cache_name = item.get('cache_name', 'Unknown')
+                operations.append({
+                    'type': 'cache_clean',
+                    'name': f'Cache Clean: {cache_name}',
+                    'start': start_time,
+                    'end': end_time,
+                    'duration': item['elapsed_time']
+                })
+
+    operations.sort(key=lambda x: x['start'])
+    return operations
+
+
 def create_benchmark_visualization(json_file):
     with open(json_file, 'r') as f:
         data = json.load(f)
@@ -385,7 +594,9 @@ def create_benchmark_visualization(json_file):
                               showarrow=False,
                               row=power_row, col=1)
 
-    operations = []
+    # Extract operations using the reusable function
+    operations = extract_operations_from_data(data, workflow_start)
+    
     colors = {
         'load_torch_file': 'purple',
         'model_load': 'orange',
@@ -402,208 +613,6 @@ def create_benchmark_visualization(json_file):
         'patch_model': 'slategray',
         'unpatch_model': 'slategray'
     }
-
-    # Handle both old and new data format
-    if 'load_data' in data:
-        # New format - load_data dictionary
-        for item in data['load_data'].get('load_torch_file', []):
-            if item['valid_timing']:
-                start_time = item['start_time'] - workflow_start
-                end_time = start_time + item['elapsed_time']
-                model_name = item['ckpt'].split('\\')[-1].split('.')[0]
-                operations.append({
-                    'type': 'load_torch_file',
-                    'name': f'Load: {model_name}',
-                    'start': start_time,
-                    'end': end_time,
-                    'duration': item['elapsed_time']
-                })
-
-        for item in data['load_data'].get('model_load', []):
-            if item['valid_timing']:
-                start_time = item['start_time'] - workflow_start
-                end_time = start_time + item['elapsed_time']
-                operations.append({
-                    'type': 'model_load',
-                    'name': f'Model Load: {item["model"]}',
-                    'start': start_time,
-                    'end': end_time,
-                    'duration': item['elapsed_time']
-                })
-
-        # New model_unload operations
-        for item in data['load_data'].get('model_unload', []):
-            if item['valid_timing']:
-                start_time = item['start_time'] - workflow_start
-                end_time = start_time + item['elapsed_time']
-                model_name = item.get('model', 'Unknown')
-                operations.append({
-                    'type': 'model_unload',
-                    'name': f'Model Unload: {model_name}',
-                    'start': start_time,
-                    'end': end_time,
-                    'duration': item['elapsed_time']
-                })
-
-        # New load_state_dict operations
-        for item in data['load_data'].get('load_state_dict', []):
-            if item['valid_timing']:
-                start_time = item['start_time'] - workflow_start
-                end_time = start_time + item['elapsed_time']
-                func_name = item.get('func_name', 'load_state_dict')
-                operations.append({
-                    'type': 'load_state_dict',
-                    'name': f'Load State Dict: {func_name}',
-                    'start': start_time,
-                    'end': end_time,
-                    'duration': item['elapsed_time'],
-                    'func_name': func_name
-                })
-
-        # New load_diffusion_model operations
-        for item in data['load_data'].get('load_diffusion_model', []):
-            if item['valid_timing']:
-                start_time = item['start_time'] - workflow_start
-                end_time = start_time + item['elapsed_time']
-                func_name = item.get('func_name', 'load_diffusion_model')
-                operations.append({
-                    'type': 'load_diffusion_model',
-                    'name': f'Load Diffusion Model: {func_name}',
-                    'start': start_time,
-                    'end': end_time,
-                    'duration': item['elapsed_time'],
-                    'func_name': func_name
-                })
-
-        # New patch_model operations (only if duration > 0.01 seconds)
-        for item in data['load_data'].get('patch_model', []):
-            if item['valid_timing'] and item['elapsed_time'] > 0.01:
-                start_time = item['start_time'] - workflow_start
-                end_time = start_time + item['elapsed_time']
-                model_name = item.get('model', 'Unknown')
-                operations.append({
-                    'type': 'patch_model',
-                    'name': f'Patch Model: {model_name}',
-                    'start': start_time,
-                    'end': end_time,
-                    'duration': item['elapsed_time']
-                })
-
-        # New unpatch_model operations (only if duration > 0.01 seconds)
-        for item in data['load_data'].get('unpatch_model', []):
-            if item['valid_timing'] and item['elapsed_time'] > 0.01:
-                start_time = item['start_time'] - workflow_start
-                end_time = start_time + item['elapsed_time']
-                model_name = item.get('model', 'Unknown')
-                operations.append({
-                    'type': 'unpatch_model',
-                    'name': f'Unpatch Model: {model_name}',
-                    'start': start_time,
-                    'end': end_time,
-                    'duration': item['elapsed_time']
-                })
-
-    for item in data['sampling_data']:
-        # Convert perf_counter times to relative seconds from workflow start
-        start_time = item['cfg_guider_start_time'] - workflow_start
-        end_time = item['cfg_guider_end_time'] - workflow_start
-        operations.append({
-            'type': 'sampling',
-            'name': f'Sampling: {item["model"]} ({item["steps"]} steps)',
-            'start': start_time,
-            'end': end_time,
-            'duration': item['cfg_guider_elapsed_time']
-        })
-
-        # Add sampler_sample if it exists
-        if 'sampler_sample_start_time' in item and 'sampler_sample_end_time' in item:
-            start_time = item['sampler_sample_start_time'] - workflow_start
-            end_time = item['sampler_sample_end_time'] - workflow_start
-            avg_iter_time = item.get('average_iteration_time', 0)
-            iter_per_sec = 1.0 / avg_iter_time if avg_iter_time > 0 else 0
-            operations.append({
-                'type': 'sampler_sample',
-                'name': f'Sampler Sample: {item["model"]} ({item["steps"]} steps)',
-                'start': start_time,
-                'end': end_time,
-                'duration': item['sampler_sample_elapsed_time'],
-                'iter_per_sec': iter_per_sec,
-                'sec_per_iter': avg_iter_time
-            })
-
-    for item in data['vae_data']['encode']:
-        if item['valid_timing']:
-            # Convert perf_counter times to relative seconds from workflow start
-            start_time = item['start_time'] - workflow_start
-            end_time = start_time + item['elapsed_time']
-            operations.append({
-                'type': 'vae_encode',
-                'name': 'VAE Encode',
-                'start': start_time,
-                'end': end_time,
-                'duration': item['elapsed_time']
-            })
-
-    for item in data['vae_data']['decode']:
-        if item['valid_timing']:
-            # Convert perf_counter times to relative seconds from workflow start
-            start_time = item['start_time'] - workflow_start
-            end_time = start_time + item['elapsed_time']
-            operations.append({
-                'type': 'vae_decode',
-                'name': 'VAE Decode',
-                'start': start_time,
-                'end': end_time,
-                'duration': item['elapsed_time']
-            })
-
-    # Add clip tokenize operations if they exist
-    if 'clip_data' in data:
-        for item in data['clip_data'].get('tokenize', []):
-            if item['valid_timing']:
-                start_time = item['start_time'] - workflow_start
-                end_time = start_time + item['elapsed_time']
-                model_name = item.get('model', 'CLIP')
-                operations.append({
-                    'type': 'clip_tokenize',
-                    'name': f'CLIP Tokenize: {model_name}',
-                    'start': start_time,
-                    'end': end_time,
-                    'duration': item['elapsed_time']
-                })
-
-        # Add clip encode operations
-        for item in data['clip_data'].get('encode', []):
-            if item['valid_timing']:
-                start_time = item['start_time'] - workflow_start
-                end_time = start_time + item['elapsed_time']
-                model_name = item.get('model', 'CLIP')
-                func_name = item.get('func_name', '')
-                operations.append({
-                    'type': 'clip_encode',
-                    'name': f'CLIP Encode: {model_name}',
-                    'start': start_time,
-                    'end': end_time,
-                    'duration': item['elapsed_time'],
-                    'func_name': func_name
-                })
-
-    # Add cache clean operations if they exist (only if duration > 0.01 seconds)
-    if 'caches_data' in data:
-        for item in data['caches_data'].get('clean_unused', []):
-            if item['elapsed_time'] > 0.01:
-                start_time = item['start_time'] - workflow_start
-                end_time = start_time + item['elapsed_time']
-                cache_name = item.get('cache_name', 'Unknown')
-                operations.append({
-                    'type': 'cache_clean',
-                    'name': f'Cache Clean: {cache_name}',
-                    'start': start_time,
-                    'end': end_time,
-                    'duration': item['elapsed_time']
-                })
-
-    operations.sort(key=lambda x: x['start'])
 
     # Determine nesting levels for each operation
     def is_contained(op1, op2):
@@ -677,6 +686,28 @@ def create_benchmark_visualization(json_file):
                 row=operations_row, col=1
             )
             legend_items.add(op['type'])
+    
+    # Add vertical line at workflow end time with total duration
+    workflow_duration = workflow_end - workflow_start
+    fig.add_shape(
+        type="line",
+        x0=workflow_duration, x1=workflow_duration,
+        y0=-0.5, y1=0.5,
+        line=dict(color="black", dash="dash", width=2),
+        row=operations_row, col=1
+    )
+    
+    # Add annotation for total time
+    fig.add_annotation(
+        text=f"Total: {workflow_duration:.2f}s",
+        x=workflow_duration,
+        y=0.4,
+        xanchor="right",
+        yanchor="bottom",
+        showarrow=False,
+        font=dict(color="black", size=10),
+        row=operations_row, col=1
+    )
 
     fig.update_xaxes(title_text="Time (seconds from start)", row=operations_row, col=1)
     if has_nvidia_data:
@@ -731,11 +762,197 @@ def create_benchmark_visualization(json_file):
     return fig
 
 
+def create_benchmark_comparison(json_files):
+    """Create a comparison visualization of multiple benchmark files showing only operations timelines."""
+    import os
+    
+    # Color palette for different benchmarks
+    benchmark_colors = ['blue', 'red', 'green', 'orange', 'purple', 'brown', 'pink', 'olive']
+    
+    # Load all benchmark data
+    benchmarks = []
+    max_time = 0
+    
+    for idx, json_file in enumerate(json_files):
+        with open(json_file, 'r') as f:
+            data = json.load(f)
+        
+        workflow_start = data['benchmark_data']['workflow_start_time']
+        workflow_end = data['benchmark_data']['workflow_end_time']
+        workflow_duration = workflow_end - workflow_start
+        
+        # Extract operations
+        operations = extract_operations_from_data(data, workflow_start)
+        
+        # Get benchmark name from filename
+        benchmark_name = os.path.splitext(os.path.basename(json_file))[0]
+        
+        benchmarks.append({
+            'name': benchmark_name,
+            'operations': operations,
+            'duration': workflow_duration,
+            'workflow_name': data.get('workflow_name', 'Unknown'),
+            'color': benchmark_colors[idx % len(benchmark_colors)]
+        })
+        
+        max_time = max(max_time, workflow_duration)
+    
+    # Create subplot with one row per benchmark
+    num_benchmarks = len(benchmarks)
+    subplot_titles = [f"{b['name']} - {b['workflow_name']}" for b in benchmarks]
+    
+    fig = make_subplots(
+        rows=num_benchmarks, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.08,  # Increased from 0.05 to give more space between subplots
+        subplot_titles=subplot_titles,
+        row_heights=[1.0/num_benchmarks] * num_benchmarks
+    )
+    
+    # Operation type colors (shared across all benchmarks)
+    colors = {
+        'load_torch_file': 'purple',
+        'model_load': 'orange',
+        'model_unload': 'black',
+        'load_state_dict': 'brown',
+        'load_diffusion_model': 'indigo',
+        'sampling': 'green',
+        'sampler_sample': 'cyan',
+        'vae_encode': 'blue',
+        'vae_decode': 'red',
+        'clip_tokenize': 'magenta',
+        'clip_encode': 'pink',
+        'cache_clean': 'gray',
+        'patch_model': 'slategray',
+        'unpatch_model': 'slategray'
+    }
+    
+    # Track legend items to avoid duplicates
+    legend_items = set()
+    
+    # Add operations for each benchmark
+    for row_idx, benchmark in enumerate(benchmarks, 1):
+        operations = benchmark['operations']
+        
+        # Determine nesting levels for each operation
+        def is_contained(op1, op2):
+            """Check if op1 is contained within op2"""
+            return op1['start'] >= op2['start'] and op1['end'] <= op2['end'] and op1 != op2
+        
+        # Calculate nesting level for each operation
+        for i, op in enumerate(operations):
+            containing_ops = []
+            for j, other_op in enumerate(operations):
+                if is_contained(op, other_op):
+                    containing_ops.append(j)
+            op['nesting_level'] = len(containing_ops)
+            op['index'] = i
+        
+        # Base sizes - increased to be more similar to single visualization
+        base_width = 60  # Increased from 40 to be closer to single viz (80)
+        width_reduction_per_level = 12  # Increased from 8 to maintain proportions
+        
+        y_position = 0
+        for op in operations:
+            # Custom hover template for different operation types
+            if op['type'] == 'sampler_sample':
+                hover_template = (f'<b>{op["name"]}</b><br>' +
+                                f'<b>Start</b>: {op["start"]:.3f}s<br>' +
+                                f'<b>End</b>: {op["end"]:.3f}s<br>' +
+                                f'<b>Duration</b>: {op["duration"]:.3f}s<br>' +
+                                f'<b>Iterations/sec</b>: {op["iter_per_sec"]:.2f} it/s<br>' +
+                                f'<b>Seconds/iter</b>: {op["sec_per_iter"]:.3f} s/it<extra></extra>')
+            elif (op['type'] in ['clip_encode', 'load_state_dict', 'load_diffusion_model']) and 'func_name' in op:
+                hover_template = (f'<b>{op["name"]}</b><br>' +
+                                f'<b>Function</b>: {op["func_name"]}<br>' +
+                                f'<b>Start</b>: {op["start"]:.3f}s<br>' +
+                                f'<b>End</b>: {op["end"]:.3f}s<br>' +
+                                f'<b>Duration</b>: {op["duration"]:.3f}s<extra></extra>')
+            else:
+                hover_template = (f'<b>{op["name"]}</b><br>' +
+                                f'<b>Start</b>: {op["start"]:.3f}s<br>' +
+                                f'<b>End</b>: {op["end"]:.3f}s<br>' +
+                                f'<b>Duration</b>: {op["duration"]:.3f}s<extra></extra>')
+            
+            # Calculate line width based on nesting level
+            line_width = max(base_width - (op['nesting_level'] * width_reduction_per_level), 10)
+            
+            # Only show in legend once
+            show_legend = op['type'] not in legend_items
+            if show_legend:
+                legend_items.add(op['type'])
+            
+            fig.add_trace(
+                go.Scatter(
+                    x=[op['start'], op['end']],
+                    y=[y_position, y_position],
+                    mode='lines',
+                    line=dict(color=colors.get(op['type'], 'gray'), width=line_width),
+                    name=op['type'].replace('_', ' ').title(),
+                    legendgroup=op['type'],
+                    showlegend=show_legend,
+                    hovertemplate=hover_template
+                ),
+                row=row_idx, col=1
+            )
+        
+        # Add vertical line at workflow end time
+        fig.add_shape(
+            type="line",
+            x0=benchmark['duration'], x1=benchmark['duration'],
+            y0=-0.5, y1=0.5,
+            line=dict(color="black", dash="dash", width=2),
+            row=row_idx, col=1
+        )
+        
+        # Add annotation for total time (on the left of the line)
+        fig.add_annotation(
+            text=f"Total: {benchmark['duration']:.2f}s",
+            x=benchmark['duration'],
+            y=0.4,
+            xanchor="right",  # Changed from "left" to "right"
+            yanchor="bottom",
+            showarrow=False,
+            font=dict(color="black", size=10),
+            row=row_idx, col=1
+        )
+    
+    # Update layout - set x-axis range to longest benchmark
+    fig.update_xaxes(title_text="Time (seconds from start)", row=num_benchmarks, col=1, range=[0, max_time])
+    
+    # Center all workflow timelines and set same x-axis range for all
+    for row in range(1, num_benchmarks + 1):
+        fig.update_yaxes(showticklabels=False, row=row, col=1, range=[-0.5, 0.5])
+        if row < num_benchmarks:  # Don't duplicate for the last row (already set above)
+            fig.update_xaxes(range=[0, max_time], row=row, col=1)
+    
+    fig.update_layout(
+        title="ComfyUI Benchmark Comparison",
+        height=200 + (150 * num_benchmarks),  # Reverted to original height
+        hovermode='x',  # Changed from 'x unified' to match single visualization
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.12,  # Moved even further down to fully avoid clipping
+            xanchor="center",
+            x=0.5
+        ),
+        margin=dict(t=50, b=160, l=50, r=50),  # Slightly increased bottom margin
+        xaxis=dict(tickformat='.1f', ticksuffix='s')
+    )
+    
+    # Link all x-axes
+    for i in range(2, num_benchmarks + 1):
+        fig.update_layout(**{f'xaxis{i}': dict(tickformat='.1f', ticksuffix='s', matches='x')})
+    
+    return fig
+
+
 if __name__ == "__main__":
     import os
     
     parser = argparse.ArgumentParser(description='Visualize ComfyUI benchmark results')
-    parser.add_argument('benchmark_file', help='Path to the benchmark JSON file')
+    parser.add_argument('benchmark_file', nargs='+', help='Path to benchmark JSON file(s). Multiple files will create a comparison view.')
     parser.add_argument('--save-image', dest='save_image', nargs='?', const='default', 
                         help='Save visualization as an image file (PNG, JPG, SVG, etc.). If no path provided, saves in current directory.')
     parser.add_argument('--save-html', dest='save_html', nargs='?', const='default',
@@ -744,11 +961,16 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    # Create the visualization
-    fig = create_benchmark_visualization(args.benchmark_file)
-    
-    # Generate default filename from benchmark file if needed
-    base_name = os.path.splitext(os.path.basename(args.benchmark_file))[0]
+    # Check if we're doing a comparison or single visualization
+    if len(args.benchmark_file) == 1:
+        # Single benchmark visualization
+        fig = create_benchmark_visualization(args.benchmark_file[0])
+        base_name = os.path.splitext(os.path.basename(args.benchmark_file[0]))[0]
+    else:
+        # Multiple benchmark comparison
+        print(f"Creating comparison visualization for {len(args.benchmark_file)} benchmarks...")
+        fig = create_benchmark_comparison(args.benchmark_file)
+        base_name = "benchmark_comparison"
     
     # Save as image if requested
     if args.save_image:
@@ -757,7 +979,12 @@ if __name__ == "__main__":
         else:
             image_path = args.save_image
         print(f"Saving image to: {image_path}")
-        fig.write_image(image_path, width=1920, height=1080, scale=2)
+        # For comparison, adjust height dynamically
+        if len(args.benchmark_file) > 1:
+            height = 200 + (150 * len(args.benchmark_file))
+            fig.write_image(image_path, width=1920, height=height, scale=2)
+        else:
+            fig.write_image(image_path, width=1920, height=1080, scale=2)
     
     # Save as HTML if requested
     if args.save_html:

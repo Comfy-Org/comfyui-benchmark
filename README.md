@@ -48,6 +48,13 @@ The benchmark results can be visualized using the included `visualize_benchmark.
 
    The benchmark file can be specified with any path - it doesn't need to follow a specific naming format.
 
+3. **Comparing Multiple Benchmarks**: To compare multiple benchmark results, provide multiple JSON files:
+   ```bash
+   python visualize_benchmark.py benchmark1.json benchmark2.json benchmark3.json
+   ```
+   
+   This creates a comparison view showing only the Workflow Operations Timeline for each benchmark, making it easy to compare performance across different runs or configurations.
+
 ### Command-line Arguments
 
 The visualization script supports the following optional arguments:
@@ -66,16 +73,32 @@ python visualize_benchmark.py benchmark_20250904_140902.json --save-image result
 
 # Save both HTML and image formats
 python visualize_benchmark.py benchmark_20250904_140902.json --save-html report.html --save-image report.svg
+
+# Compare multiple benchmarks and save as HTML
+python visualize_benchmark.py benchmark1.json benchmark2.json --save-html comparison.html
+
+# Compare all benchmark files in current directory
+python visualize_benchmark.py benchmark_*.json --save-html all_benchmarks_comparison.html
 ```
 
 ### Visualization Features
 
 The script creates an interactive Plotly graph showing:
+
+**Single Benchmark Mode:**
 - **Device Information Table** - GPU details, PyTorch version, startup arguments
 - **VRAM Usage** - Timeline showing memory consumption with initial and maximum VRAM lines (NVIDIA only*)
+- **RAM Usage** - System memory consumption over time (when psutil data is available)
 - **GPU Utilization** - GPU usage percentage over time (NVIDIA only*)
 - **Power Usage** - Power draw with both average and instantaneous values (NVIDIA only*)
-- **Workflow Operations Timeline** - Color-coded bars showing when different operations occurred (model loading, sampling, VAE encode/decode, etc.)
+- **Workflow Operations Timeline** - Color-coded bars showing when different operations occurred (model loading, sampling, VAE encode/decode, etc.) with total workflow duration indicator
+
+**Comparison Mode (Multiple Benchmarks):**
+- **Stacked Workflow Operations Timelines** - Each benchmark's operations are displayed in a separate row with:
+  - Shared time axis for easy comparison
+  - Total duration indicators for each benchmark
+  - Consistent color coding across all benchmarks
+  - Aligned to the longest benchmark's duration
 
 *Note: VRAM usage, GPU utilization, and power usage graphs are only available on NVIDIA devices with the `nvidia-smi` command working. The workflow operations timeline will still be displayed for all devices.
 
