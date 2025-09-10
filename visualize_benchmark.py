@@ -64,7 +64,8 @@ def extract_operations_from_data(data, workflow_start):
             if item['valid_timing']:
                 start_time = item['start_time'] - workflow_start
                 end_time = start_time + item['elapsed_time']
-                model_name = item['ckpt'].split('\\')[-1].split('.')[0]
+                # Get full filename including extension
+                model_name = item['ckpt'].split('\\')[-1]
                 operations.append({
                     'type': 'load_torch_file',
                     'name': f'Load: {model_name}',
@@ -786,12 +787,21 @@ def create_benchmark_comparison(json_files):
         
         # Get benchmark name from filename
         benchmark_name = os.path.splitext(os.path.basename(json_file))[0]
+        workflow_name = data.get('workflow_name', 'Unknown')
+        
+        # If workflow_name is the same as benchmark_name, just use one
+        # Otherwise show both
+        if benchmark_name == workflow_name:
+            display_name = benchmark_name
+        else:
+            display_name = f"{benchmark_name} - {workflow_name}"
         
         benchmarks.append({
             'name': benchmark_name,
+            'display_name': display_name,
             'operations': operations,
             'duration': workflow_duration,
-            'workflow_name': data.get('workflow_name', 'Unknown'),
+            'workflow_name': workflow_name,
             'color': benchmark_colors[idx % len(benchmark_colors)]
         })
         
@@ -799,7 +809,7 @@ def create_benchmark_comparison(json_files):
     
     # Create subplot with one row per benchmark
     num_benchmarks = len(benchmarks)
-    subplot_titles = [f"{b['name']} - {b['workflow_name']}" for b in benchmarks]
+    subplot_titles = [b['display_name'] for b in benchmarks]
     
     # Calculate vertical spacing as a fraction to maintain constant pixel spacing
     # We want about 40 pixels between subplots to avoid title overlap
