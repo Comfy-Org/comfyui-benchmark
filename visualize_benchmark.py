@@ -68,8 +68,8 @@ def extract_operations_from_data(data, workflow_start):
             if item['valid_timing']:
                 start_time = item['start_time'] - workflow_start
                 end_time = start_time + item['elapsed_time']
-                # Get full filename including extension
-                model_name = item['ckpt'].split('\\')[-1]
+                # Get full filename including extension (handle both Windows and Linux paths)
+                model_name = os.path.basename(item['ckpt'])
                 operations.append({
                     'type': 'load_torch_file',
                     'name': f'Load: {model_name}',
