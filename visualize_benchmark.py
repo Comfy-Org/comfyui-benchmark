@@ -862,12 +862,16 @@ def create_benchmark_comparison(json_files):
         benchmark_name = os.path.splitext(os.path.basename(json_file))[0]
         workflow_name = data.get('workflow_name', 'Unknown')
         
+        # Get device name from device_info
+        device_info = data.get('device_info', {})
+        device_name = device_info.get('name', 'Unknown Device')
+        
         # If workflow_name is the same as benchmark_name, just use one
         # Otherwise show both
         if benchmark_name == workflow_name:
-            display_name = benchmark_name
+            display_name = f"{benchmark_name} - {device_name}"
         else:
-            display_name = f"{benchmark_name} - {workflow_name}"
+            display_name = f"{benchmark_name} - {workflow_name} - {device_name}"
         
         benchmarks.append({
             'name': benchmark_name,
@@ -875,6 +879,7 @@ def create_benchmark_comparison(json_files):
             'operations': operations,
             'duration': workflow_duration,
             'workflow_name': workflow_name,
+            'device_name': device_name,
             'color': benchmark_colors[idx % len(benchmark_colors)]
         })
         
