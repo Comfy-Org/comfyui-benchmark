@@ -49,12 +49,28 @@ The benchmark results can be visualized using the included `visualize_benchmark.
 
    The benchmark file can be specified with any path - it doesn't need to follow a specific naming format.
 
-3. **Comparing Multiple Benchmarks**: To compare multiple benchmark results, provide multiple JSON files:
+3. **Comparing Multiple Benchmarks**: To compare multiple benchmark results, you have several options:
+   
+   Provide multiple JSON files:
    ```bash
    python visualize_benchmark.py benchmark1.json benchmark2.json benchmark3.json
    ```
    
-   This creates a comparison view showing only the Workflow Operations Timeline for each benchmark, making it easy to compare performance across different runs or configurations.
+   Compare all benchmarks in a directory:
+   ```bash
+   # Current directory
+   python visualize_benchmark.py .
+   
+   # Specific directory
+   python visualize_benchmark.py /path/to/benchmarks/
+   ```
+   
+   Mix directories and individual files:
+   ```bash
+   python visualize_benchmark.py benchmarks_dir/ extra_benchmark.json
+   ```
+   
+   This creates a comparison view showing only the Workflow Operations Timeline for each benchmark, making it easy to compare performance across different runs or configurations. When providing a directory, the script automatically finds and validates all JSON files with proper benchmark structure.
 
 ### Command-line Arguments
 
@@ -77,6 +93,12 @@ python visualize_benchmark.py benchmark_20250904_140902.json --save-html report.
 
 # Compare multiple benchmarks and save as HTML
 python visualize_benchmark.py benchmark1.json benchmark2.json --save-html comparison.html
+
+# Compare all benchmarks in current directory
+python visualize_benchmark.py . --save-html all_benchmarks.html
+
+# Compare benchmarks from a specific directory
+python visualize_benchmark.py ./outputs/benchmarks/ --save-image comparison.png
 ```
 
 ### Visualization Features

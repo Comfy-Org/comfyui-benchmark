@@ -979,9 +979,10 @@ def create_benchmark_comparison(json_files):
 
 if __name__ == "__main__":
     import os
+    import glob
     
     parser = argparse.ArgumentParser(description='Visualize ComfyUI benchmark results')
-    parser.add_argument('benchmark_file', nargs='+', help='Path to benchmark JSON file(s). Multiple files will create a comparison view.')
+    parser.add_argument('benchmark_file', nargs='+', help='Path to benchmark JSON file(s) or directory. Multiple files will create a comparison view.')
     parser.add_argument('--save-image', dest='save_image', nargs='?', const='default', 
                         help='Save visualization as an image file (PNG, JPG, SVG, etc.). If no path provided, saves in current directory.')
     parser.add_argument('--save-html', dest='save_html', nargs='?', const='default',
@@ -990,15 +991,47 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
+    # Process input files - expand directories to JSON files
+    input_files = []
+    for path in args.benchmark_file:
+        if os.path.isdir(path):
+            # If it's a directory, find all JSON files in it
+            json_files = glob.glob(os.path.join(path, '*.json'))
+            # Try to load each JSON file to see if it's a valid benchmark file
+            valid_files = []
+            for json_file in json_files:
+                try:
+                    with open(json_file, 'r') as f:
+                        data = json.load(f)
+                        # Check if it has the expected benchmark structure
+                        if 'benchmark_data' in data and 'device_info' in data:
+                            valid_files.append(json_file)
+                except (json.JSONDecodeError, KeyError, IOError):
+                    # Skip invalid JSON files or files without benchmark data
+                    continue
+            if valid_files:
+                print(f"Found {len(valid_files)} valid benchmark files in directory: {path}")
+                input_files.extend(sorted(valid_files))  # Sort for consistent ordering
+            else:
+                print(f"Warning: No valid benchmark JSON files found in directory: {path}")
+        elif os.path.isfile(path):
+            input_files.append(path)
+        else:
+            print(f"Warning: Path does not exist: {path}")
+    
+    if not input_files:
+        print("Error: No valid benchmark files found.")
+        sys.exit(1)
+    
     # Check if we're doing a comparison or single visualization
-    if len(args.benchmark_file) == 1:
+    if len(input_files) == 1:
         # Single benchmark visualization
-        fig = create_benchmark_visualization(args.benchmark_file[0])
-        base_name = os.path.splitext(os.path.basename(args.benchmark_file[0]))[0]
+        fig = create_benchmark_visualization(input_files[0])
+        base_name = os.path.splitext(os.path.basename(input_files[0]))[0]
     else:
         # Multiple benchmark comparison
-        print(f"Creating comparison visualization for {len(args.benchmark_file)} benchmarks...")
-        fig = create_benchmark_comparison(args.benchmark_file)
+        print(f"Creating comparison visualization for {len(input_files)} benchmarks...")
+        fig = create_benchmark_comparison(input_files)
         base_name = "benchmark_comparison"
     
     # Save as image if requested
@@ -1012,9 +1045,9 @@ if __name__ == "__main__":
                 image_path += '.png'
         print(f"Saving image to: {image_path}")
         # For comparison, adjust height dynamically
-        if len(args.benchmark_file) > 1:
+        if len(input_files) > 1:
             fixed_height_per_benchmark = 180  # Same as in create_benchmark_comparison
-            height = 100 + (fixed_height_per_benchmark * len(args.benchmark_file))
+            height = 100 + (fixed_height_per_benchmark * len(input_files))
             fig.write_image(image_path, width=1920, height=height, scale=2)
         else:
             fig.write_image(image_path, width=1920, height=1080, scale=2)
