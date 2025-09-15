@@ -241,13 +241,14 @@ def hook_CLIP():
                 end_time = time.perf_counter()
                 if check_nested and hasattr(args[0], "_inside_benchmark_hook"):
                     delattr(args[0], "_inside_benchmark_hook")
-                context.clip_data[category].append({
-                    "model": str(args[0].cond_stage_model.__class__.__name__),
-                    "func_name": func_name,
-                    "elapsed_time": end_time - start_time,
-                    "start_time": start_time,
-                    "valid_timing": valid_timing,
-                })
+                if context is not None:
+                    context.clip_data[category].append({
+                        "model": str(args[0].cond_stage_model.__class__.__name__),
+                        "func_name": func_name,
+                        "elapsed_time": end_time - start_time,
+                        "start_time": start_time,
+                        "valid_timing": valid_timing,
+                    })
         return wrapper_CLIP
     comfy.sd.CLIP.encode = factory_CLIP(comfy.sd.CLIP.encode, "CLIP.encode", "encode")
     comfy.sd.CLIP.encode_from_tokens = factory_CLIP(comfy.sd.CLIP.encode_from_tokens, "CLIP.encode_from_tokens", "encode")
@@ -269,11 +270,12 @@ def hook_VAE():
                     raise
                 finally:
                     end_time = time.perf_counter()
-                    context.vae_data["encode"].append({
-                        "elapsed_time": end_time - start_time,
-                        "start_time": start_time,
-                        "valid_timing": valid_timing
-                    })
+                    if context is not None:
+                        context.vae_data["encode"].append({
+                            "elapsed_time": end_time - start_time,
+                            "start_time": start_time,
+                            "valid_timing": valid_timing
+                        })
             return wrapper_VAE_encode
         comfy.sd.VAE.encode = factory_VAE_encode(comfy.sd.VAE.encode)
 
@@ -291,11 +293,12 @@ def hook_VAE():
                     raise
                 finally:
                     end_time = time.perf_counter()
-                    context.vae_data["decode"].append({
-                        "elapsed_time": end_time - start_time,
-                        "start_time": start_time,
-                        "valid_timing": valid_timing
-                    })
+                    if context is not None:
+                        context.vae_data["decode"].append({
+                            "elapsed_time": end_time - start_time,
+                            "start_time": start_time,
+                            "valid_timing": valid_timing
+                        })
             return wrapper_VAE_decode
         comfy.sd.VAE.decode = factory_VAE_decode(comfy.sd.VAE.decode)
     hook_VAE_encode()
@@ -315,12 +318,13 @@ def hook_LoadedModel_model_load():
                 raise
             finally:
                 end_time = time.perf_counter()
-                context.load_data[category].append({
-                    "model": str(args[0].model.model.__class__.__name__ if model_nest == 2 else args[0].model.__class__.__name__),
-                    "elapsed_time": end_time - start_time,
-                    "start_time": start_time,
-                    "valid_timing": valid_timing
-                })
+                if context is not None:
+                    context.load_data[category].append({
+                        "model": str(args[0].model.model.__class__.__name__ if model_nest == 2 else args[0].model.__class__.__name__),
+                        "elapsed_time": end_time - start_time,
+                        "start_time": start_time,
+                        "valid_timing": valid_timing
+                    })
         return wrapper_LoadedModel_model_load
     comfy.model_management.LoadedModel.model_load = factory_LoadedModel_model_load(comfy.model_management.LoadedModel.model_load, "model_load")
     comfy.model_management.LoadedModel.model_unload = factory_LoadedModel_model_load(comfy.model_management.LoadedModel.model_unload, "model_unload")
@@ -341,12 +345,13 @@ def hook_load_state_dict():
                 raise
             finally:
                 end_time = time.perf_counter()
-                context.load_data["load_state_dict"].append({
-                    "func_name": func_name,
-                    "elapsed_time": end_time - start_time,
-                    "start_time": start_time,
-                    "valid_timing": valid_timing
-                })
+                if context is not None:
+                    context.load_data["load_state_dict"].append({
+                        "func_name": func_name,
+                        "elapsed_time": end_time - start_time,
+                        "start_time": start_time,
+                        "valid_timing": valid_timing
+                    })
         return wrapper_load_state_dict
 
     def factory_load_diffusion_model(func, func_name: str):
@@ -362,12 +367,13 @@ def hook_load_state_dict():
                 raise
             finally:
                 end_time = time.perf_counter()
-                context.load_data["load_diffusion_model"].append({
-                    "func_name": func_name,
-                    "elapsed_time": end_time - start_time,
-                    "start_time": start_time,
-                    "valid_timing": valid_timing
-                })
+                if context is not None:
+                    context.load_data["load_diffusion_model"].append({
+                        "func_name": func_name,
+                        "elapsed_time": end_time - start_time,
+                        "start_time": start_time,
+                        "valid_timing": valid_timing
+                    })
         return wrapper_load_diffusion_model
 
     comfy.sd.load_state_dict_guess_config = factory_load_state_dict(comfy.sd.load_state_dict_guess_config, "load_state_dict_guess_config")
@@ -391,12 +397,13 @@ def hook_load_torch_file():
                 raise
             finally:
                 end_time = time.perf_counter()
-                context.load_data["load_torch_file"].append({
-                    "ckpt": args[0],
-                    "elapsed_time": end_time - start_time,
-                    "start_time": start_time,
-                    "valid_timing": valid_timing
-                })
+                if context is not None:
+                    context.load_data["load_torch_file"].append({
+                        "ckpt": args[0],
+                        "elapsed_time": end_time - start_time,
+                        "start_time": start_time,
+                        "valid_timing": valid_timing
+                    })
         return wrapper_load_torch_file
     comfy.utils.load_torch_file = factory_load_torch_file(comfy.utils.load_torch_file)
 
@@ -442,9 +449,10 @@ def hook_CFGGuider_sample():
                 temp_dict = {}
                 temp_dict["model"] = guider.model_patcher.model.__class__.__name__
                 temp_dict["steps"] = len(args[4])-1  # NOTE: uses sigmas passed into sample() function
-                if GLOBAL_CONTEXT.get_log_dict().get("iteration_times", True):
-                    add_predict_noise_wrapper(model_options, GLOBAL_CONTEXT, temp_dict)
-                add_sampler_sample_wrapper(model_options, GLOBAL_CONTEXT, temp_dict)
+                if GLOBAL_CONTEXT is not None:
+                    if GLOBAL_CONTEXT.get_log_dict().get("iteration_times", True):
+                        add_predict_noise_wrapper(model_options, GLOBAL_CONTEXT, temp_dict)
+                    add_sampler_sample_wrapper(model_options, GLOBAL_CONTEXT, temp_dict)
                 guider.model_options = model_options
                 cfg_guider_start_time = time.perf_counter()
                 return func(*args, **kwargs)
@@ -457,7 +465,8 @@ def hook_CFGGuider_sample():
                     temp_dict["average_iteration_time"] = sum(temp_dict["iteration_times"]) / len(temp_dict["iteration_times"])
                 else:
                     temp_dict["average_iteration_time"] = -1
-                GLOBAL_CONTEXT.sampling_data.append(temp_dict)
+                if GLOBAL_CONTEXT is not None:
+                    GLOBAL_CONTEXT.sampling_data.append(temp_dict)
                 guider.model_options = orig_model_options
         return wrapper_CFGGuider_sample
     comfy.samplers.CFGGuider.sample = factory_CFGGuider_sample(comfy.samplers.CFGGuider.sample)
@@ -472,11 +481,12 @@ def hook_PromptExecutor_caches_clean_unused(executor: execution.PromptExecutor):
                 return func(*args, **kwargs)
             finally:
                 end_time = time.perf_counter()
-                context.caches_data["clean_unused"].append({
-                    "cache_name": cache_name,
-                    "elapsed_time": end_time - start_time,
-                    "start_time": start_time,
-                })
+                if context is not None:
+                    context.caches_data["clean_unused"].append({
+                        "cache_name": cache_name,
+                        "elapsed_time": end_time - start_time,
+                        "start_time": start_time,
+                    })
         return wrapper_cache_clean_unused
     if not hasattr(executor, "_hooked_by_benchmark"):
         executor.caches.outputs.clean_unused = factory_cache_clean_unused(executor.caches.outputs.clean_unused, f"outputs:{executor.caches.outputs.__class__.__name__}")
