@@ -1,5 +1,5 @@
 # comfyui-benchmark
-Custom node pack for benchmarking ComfyUI performance
+Custom extension for benchmarking ComfyUI performance
 
 ## Output
 
