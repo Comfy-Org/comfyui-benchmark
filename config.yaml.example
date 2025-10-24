@@ -4,3 +4,5 @@ name_prefix: benchmark
 nvidia-smi:
   check_interval: 0.25
   enable_thread: true
+options:
+  require_node: false
