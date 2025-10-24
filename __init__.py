@@ -9,6 +9,7 @@ import json
 import argparse
 import yaml
 import psutil
+
 from comfy_api.latest import ComfyExtension, io
 import execution
 import folder_paths
@@ -19,25 +20,34 @@ import comfy.model_management
 import comfy.cli_args
 import comfy.utils
 import comfy.sd
+
+
 if comfy.model_management.is_nvidia():
     from threading import Thread
     from queue import Queue, Empty
     import subprocess
 from .nodes import BenchmarkWorkflow  # Import the custom node
 
+
 VERSION = 0
+# currently, for simplicity we use a global variable to store the execution context;
+# this allows us to access the execution context from all hooks without having to remake the hooks at runtime
 GLOBAL_CONTEXT = None
 ENABLE_NVIDIA_SMI_DATA = False
 INITIAL_NVIDIA_SMI_QUERY = None
 INFO_NVIDIA_SMI_QUERY = None
 NVIDIA_SMI_ERROR = None
+
 INITIAL_PSUTIL_QUERY = None
 psutil_query = ["timestamp", "used", "total"]
+
 nvidia_smi_query = ["timestamp", "memory.used", "memory.total", "utilization.gpu", "utilization.memory", "power.draw", "power.draw.instant", "power.limit", "pcie.link.gen.current", "pcie.link.gen.max", "pcie.link.width.current"]
 _nvidia_smi_query_list = ["nvidia-smi", "--query-gpu=" + ",".join(nvidia_smi_query), "--format=csv,noheader,nounits"]
+
 info_nvidia_smi_query = ["name", "count", "driver_version", "display_active", "vbios_version", "power.management"]
 _info_nvidia_smi_query_list = ["nvidia-smi", "--query-gpu=" + ",".join(info_nvidia_smi_query), "--format=csv,noheader,nounits"]
 
+# For NVIDIA devices, during the benchmark setup a process to call nvidia-smi regularly (or with varying intervals)
 def nvidia_smi_thread(out_queue: Queue, in_queue: Queue, check_interval: float):
     logging.info("Starting nvidia-smi thread")
     while True:
@@ -73,6 +83,7 @@ def get_from_nvidia_smi(query: str, param: str, _query_list: list[str]=nvidia_sm
     values = query.split(",")
     return values[index]
 
+
 def json_func(obj):
     try:
         return str(obj)
@@ -80,10 +91,15 @@ def json_func(obj):
         return "Error converting to json"
 
 def get_provided_args(args, parser):
+    """
+    Return only the arguments that were explicitly provided
+    (i.e. differ from their defaults).
+    """
     defaults = {a.dest: a.default for a in parser._actions if a.dest != argparse.SUPPRESS}
     args_dict = vars(args)
     return {k: v for k, v in args_dict.items() if defaults.get(k) != v}
 
+# NOTE: the version of this in comfy.patcher_extension has internal dict merge wrong; so use this instead for now
 def merge_nested_dicts(dict1: dict, dict2: dict, copy_dict1=True):
     if copy_dict1:
         merged_dict = comfy.patcher_extension.copy_nested_dicts(dict1)
@@ -101,18 +117,15 @@ def merge_nested_dicts(dict1: dict, dict2: dict, copy_dict1=True):
 
 def load_config():
     default_config = {
-        "nvidia-smi": {
-            "enable_thread": True,
-            "check_interval": 0.25
-        },
-        "log": {
-            "iteration_times": True,
-        },
-        "name_prefix": "benchmark",
-        "options": {
-            "require_node": False
+            "nvidia-smi": {
+                "enable_thread": True,
+                "check_interval": 0.25
+            },
+            "log": {
+                "iteration_times": True,
+            },
+            "name_prefix": "benchmark"
         }
-    }
     config_file = os.path.join(os.path.dirname(__file__), "config.yaml")
     if os.path.exists(config_file):
         try:
@@ -220,6 +233,7 @@ class ExecutionContext:
 def hook_CLIP():
     def factory_CLIP(func, func_name: str, category: str, check_nested=True):
         def wrapper_CLIP(*args, **kwargs):
+            # don't track anything if already nested within a benchmark hook
             if check_nested and getattr(args[0], "_inside_benchmark_hook", False):
                 return func(*args, **kwargs)
             global GLOBAL_CONTEXT
@@ -274,6 +288,7 @@ def hook_VAE():
                         })
             return wrapper_VAE_encode
         comfy.sd.VAE.encode = factory_VAE_encode(comfy.sd.VAE.encode)
+
     def hook_VAE_decode():
         def factory_VAE_decode(func):
             def wrapper_VAE_decode(*args, **kwargs):
@@ -348,6 +363,7 @@ def hook_load_state_dict():
                         "valid_timing": valid_timing
                     })
         return wrapper_load_state_dict
+
     def factory_load_diffusion_model(func, func_name: str):
         def wrapper_load_diffusion_model(*args, **kwargs):
             global GLOBAL_CONTEXT
@@ -369,6 +385,7 @@ def hook_load_state_dict():
                         "valid_timing": valid_timing
                     })
         return wrapper_load_diffusion_model
+
     comfy.sd.load_state_dict_guess_config = factory_load_state_dict(comfy.sd.load_state_dict_guess_config, "load_state_dict_guess_config")
     comfy.sd.load_diffusion_model_state_dict = factory_load_state_dict(comfy.sd.load_diffusion_model_state_dict, "load_diffusion_model_state_dict")
     comfy.sd.load_text_encoder_state_dicts = factory_load_state_dict(comfy.sd.load_text_encoder_state_dicts, "load_text_encoder_state_dicts")
@@ -414,6 +431,7 @@ def hook_CFGGuider_sample():
             return wrapper_predict_noise
         comfy.patcher_extension.add_wrapper_with_key(comfy.patcher_extension.WrappersMP.PREDICT_NOISE, "benchmark_sampling", factory_predict_noise(context, temp_dict),
                                             model_options, is_model_options=True)
+
     def add_sampler_sample_wrapper(model_options: dict, context: ExecutionContext, temp_dict: dict[str]):
         def factory_sampler_sample(c, temp_dict: dict[str]):
             def wrapper_sampler_sample(executor,*args, **kwargs):
@@ -428,6 +446,7 @@ def hook_CFGGuider_sample():
             return wrapper_sampler_sample
         comfy.patcher_extension.add_wrapper_with_key(comfy.patcher_extension.WrappersMP.SAMPLER_SAMPLE, "benchmark_sampling", factory_sampler_sample(context, temp_dict),
                                             model_options, is_model_options=True)
+
     def factory_CFGGuider_sample(func):
         def wrapper_CFGGuider_sample(*args, **kwargs):
             global GLOBAL_CONTEXT
@@ -439,7 +458,7 @@ def hook_CFGGuider_sample():
                 model_options = comfy.model_patcher.create_model_options_clone(orig_model_options)
                 temp_dict = {}
                 temp_dict["model"] = guider.model_patcher.model.__class__.__name__
-                temp_dict["steps"] = len(args[4])-1
+                temp_dict["steps"] = len(args[4])-1  # NOTE: uses sigmas passed into sample() function
                 if GLOBAL_CONTEXT is not None:
                     if GLOBAL_CONTEXT.get_log_dict().get("iteration_times", True):
                         add_predict_noise_wrapper(model_options, GLOBAL_CONTEXT, temp_dict)
@@ -501,10 +520,17 @@ def check_workflow_for_benchmark_node(prompt: dict) -> Tuple[bool, str, str]:
 
 def hook_PromptExecutor_execute():
     def factory_PromptExecutor_execute(func):
+        '''
+        Create wrapper function that will time the total execution time for a workflow.
+        '''
         def wrapper_PromptExecutor_execute(executor, prompt, *args, **kwargs):
             global GLOBAL_CONTEXT, ENABLE_NVIDIA_SMI_DATA, INITIAL_NVIDIA_SMI_QUERY, INFO_NVIDIA_SMI_QUERY, NVIDIA_SMI_ERROR
+            args = args
+            kwargs = kwargs
+            # create execution context
             context = ExecutionContext()
             GLOBAL_CONTEXT = context
+            # if its an nvidia card, we can do overall memory usage tracking via nvidia-smi calls
             should_save_benchmark = True
             if context.is_require_node_enabled():
                 should_save_benchmark = check_workflow_for_benchmark_node(prompt)[0]
@@ -512,6 +538,7 @@ def hook_PromptExecutor_execute():
             if should_save_benchmark and context.is_nvidia_smi_thread_enabled() and ENABLE_NVIDIA_SMI_DATA:
                 out_queue, in_queue, thread = create_nvidia_smi_thread(context.get_nvidia_smi_check_interval())
                 thread_started = True
+            # hook caches, but only once per startup of ComfyUI
             hook_PromptExecutor_caches_clean_unused(executor)
             try:
                 start_datetime = datetime.datetime.now().strftime("%Y/%m/%d %H:%M:%S.%f")
@@ -539,6 +566,7 @@ def hook_PromptExecutor_execute():
                 if should_save_benchmark:
                     context.save_to_log_file(prompt)
                 GLOBAL_CONTEXT = None
+
         return wrapper_PromptExecutor_execute
     execution.PromptExecutor.execute = factory_PromptExecutor_execute(execution.PromptExecutor.execute)
 
@@ -585,12 +613,14 @@ class BenchmarkExtension(ComfyExtension):
         initialize_benchmark_hooks()
         INITIAL_PSUTIL_QUERY = call_psutil(include_prefix=False)
         if comfy.model_management.is_nvidia():
+            # get current memory usage
             try:
                 INITIAL_NVIDIA_SMI_QUERY = call_nvidia_smi(_nvidia_smi_query_list, set_nvidia_smi_error=True, print_error=True)
                 INFO_NVIDIA_SMI_QUERY = call_nvidia_smi(_info_nvidia_smi_query_list, set_nvidia_smi_error=True, print_error=True)
                 if INITIAL_NVIDIA_SMI_QUERY is not None and INFO_NVIDIA_SMI_QUERY is not None:
                     ENABLE_NVIDIA_SMI_DATA = True
             except Exception as e:
+                # NOTE: this should never happen, but just in case
                 logging.error(f"Error getting initial nvidia smi query: {e}")
                 NVIDIA_SMI_ERROR = f"{e}"
         return [BenchmarkWorkflow]
