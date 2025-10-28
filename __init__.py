@@ -220,19 +220,20 @@ class ExecutionContext:
         benchmark_dir = os.path.join(output_dir, "benchmark")
         os.makedirs(benchmark_dir, exist_ok=True)
         # Check for BenchmarkWorkflow node and get postfixes
+        prefix = ""
         postfix = ""
         if prompt is not None:
-            has_benchmark_node, postfix1, postfix2 = check_workflow_for_benchmark_node(prompt)
-            if has_benchmark_node:
-                postfix = ""
-                for pf in [postfix1, postfix2]:
-                    if pf:
-                        postfix += f"_{pf}"
-        benchmark_file = os.path.join(benchmark_dir, f"{self.workflow_name}{postfix}.json")
+            has_benchmark_node, prefix, postfix = check_workflow_for_benchmark_node(prompt)
+            if prefix:
+                prefix = f"{prefix}_"
+            if postfix:
+                postfix = f"_{postfix}"
+        benchmark_name = f"{prefix}{self.workflow_name}{postfix}"
+        benchmark_file = os.path.join(benchmark_dir, f"{benchmark_name}.json")
         try:
             with open(benchmark_file, "w") as f:
                 json.dump(self.__dict__, f, indent=4, ensure_ascii=False, default=json_func)
-            logging.info(f"Benchmark: {self.workflow_name}{postfix} saved to {benchmark_file}")
+            logging.info(f"Benchmark: {benchmark_name} saved to {benchmark_file}")
         except Exception as e:
             logging.error(f"Error saving benchmark file {benchmark_file}: {e}")
 
@@ -513,7 +514,7 @@ def hook_PromptExecutor_caches_clean_unused(executor: execution.PromptExecutor):
 def check_workflow_for_benchmark_node(prompt: dict) -> Tuple[bool, str, str]:
     """
     Check if the workflow contains a BenchmarkWorkflow node with capture_benchmark=True.
-    Returns a tuple of (has_benchmark_node, outfile_postfix1, outfile_postfix2).
+    Returns a tuple of (has_benchmark_node, file_prefix, file_postfix).
     """
     for node_id, node in prompt.items():
         if not isinstance(node, dict):
@@ -521,7 +522,7 @@ def check_workflow_for_benchmark_node(prompt: dict) -> Tuple[bool, str, str]:
         class_type = node.get("class_type")
         inputs = node.get("inputs", {})
         if class_type == "BenchmarkWorkflow" and inputs.get("capture_benchmark", False):
-            return True, str(inputs.get("outfile_postfix1", "")), str(inputs.get("outfile_postfix2", ""))
+            return True, str(inputs.get("file_prefix", "")), str(inputs.get("file_postfix", ""))
     return False, "", ""
 
 def hook_PromptExecutor_execute():
