@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Union, Any
+from typing import Union, Any, Tuple, Optional
 import time
 import datetime
 import logging
@@ -26,6 +26,7 @@ if comfy.model_management.is_nvidia():
     from threading import Thread
     from queue import Queue, Empty
     import subprocess
+from .nodes import BenchmarkWorkflow  # Import the custom node
 
 
 VERSION = 0
@@ -197,6 +198,9 @@ class ExecutionContext:
     def get_log_dict(self):
         return self.config.get("log", {})
 
+    def is_require_node_enabled(self):
+        return self.config.get("options", {}).get("require_node", False)
+
     def _create_nvidia_smi_data_info(self):
         self.nvidia_smi_data_info["info_nvidia_smi_query_params"] = ", ".join(info_nvidia_smi_query)
         self.nvidia_smi_data_info["info_nvidia_smi_query"] = INFO_NVIDIA_SMI_QUERY
@@ -208,15 +212,21 @@ class ExecutionContext:
         self.psutil_data_info["psutil_query_params"] = ", ".join(psutil_query)
         self.psutil_data_info["initial_psutil_query"] = INITIAL_PSUTIL_QUERY
 
-    def save_to_log_file(self):
+    def save_to_log_file(self, prompt: dict = None):
         output_dir = folder_paths.get_output_directory()
         benchmark_dir = os.path.join(output_dir, "benchmark")
         os.makedirs(benchmark_dir, exist_ok=True)
-        benchmark_file = os.path.join(benchmark_dir, f"{self.workflow_name}.json")
+        # Check for BenchmarkWorkflow node and get postfixes
+        postfix = ""
+        if prompt is not None:
+            has_benchmark_node, postfix1, postfix2 = check_workflow_for_benchmark_node(prompt)
+            if has_benchmark_node:
+                postfix = f"{postfix1}{postfix2}"
+        benchmark_file = os.path.join(benchmark_dir, f"{self.workflow_name}{postfix}.json")
         try:
             with open(benchmark_file, "w") as f:
                 json.dump(self.__dict__, f, indent=4, ensure_ascii=False, default=json_func)
-            logging.info(f"Benchmark: {self.workflow_name} saved to {benchmark_file}")
+            logging.info(f"Benchmark: {self.workflow_name}{postfix} saved to {benchmark_file}")
         except Exception as e:
             logging.error(f"Error saving benchmark file {benchmark_file}: {e}")
 
@@ -494,12 +504,26 @@ def hook_PromptExecutor_caches_clean_unused(executor: execution.PromptExecutor):
         executor.caches.objects.clean_unused = factory_cache_clean_unused(executor.caches.objects.clean_unused, f"objects:{executor.caches.objects.__class__.__name__}")
         setattr(executor, "_hooked_by_benchmark", True)
 
+def check_workflow_for_benchmark_node(prompt: dict) -> Tuple[bool, str, str]:
+    """
+    Check if the workflow contains a BenchmarkWorkflow node with capture_benchmark=True.
+    Returns a tuple of (has_benchmark_node, outfile_postfix1, outfile_postfix2).
+    """
+    for node_id, node in prompt.items():
+        if not isinstance(node, dict):
+            continue
+        class_type = node.get("class_type")
+        inputs = node.get("inputs", {})
+        if class_type == "BenchmarkWorkflow" and inputs.get("capture_benchmark", False):
+            return True, str(inputs.get("outfile_postfix1", "")), str(inputs.get("outfile_postfix2", ""))
+    return False, "", ""
+
 def hook_PromptExecutor_execute():
     def factory_PromptExecutor_execute(func):
         '''
         Create wrapper function that will time the total execution time for a workflow.
         '''
-        def wrapper_PromptExecutor_execute(*args, **kwargs):
+        def wrapper_PromptExecutor_execute(executor, prompt, *args, **kwargs):
             global GLOBAL_CONTEXT, ENABLE_NVIDIA_SMI_DATA, INITIAL_NVIDIA_SMI_QUERY, INFO_NVIDIA_SMI_QUERY, NVIDIA_SMI_ERROR
             args = args
             kwargs = kwargs
@@ -507,16 +531,19 @@ def hook_PromptExecutor_execute():
             context = ExecutionContext()
             GLOBAL_CONTEXT = context
             # if its an nvidia card, we can do overall memory usage tracking via nvidia-smi calls
+            should_save_benchmark = True
+            if context.is_require_node_enabled():
+                should_save_benchmark = check_workflow_for_benchmark_node(prompt)[0]
             thread_started = False
-            if context.is_nvidia_smi_thread_enabled() and ENABLE_NVIDIA_SMI_DATA:
+            if should_save_benchmark and context.is_nvidia_smi_thread_enabled() and ENABLE_NVIDIA_SMI_DATA:
                 out_queue, in_queue, thread = create_nvidia_smi_thread(context.get_nvidia_smi_check_interval())
                 thread_started = True
             # hook caches, but only once per startup of ComfyUI
-            hook_PromptExecutor_caches_clean_unused(args[0])
+            hook_PromptExecutor_caches_clean_unused(executor)
             try:
                 start_datetime = datetime.datetime.now().strftime("%Y/%m/%d %H:%M:%S.%f")
                 start_time = time.perf_counter()
-                result = func(*args, **kwargs)
+                result = func(executor, prompt, *args, **kwargs)
                 end_time = time.perf_counter()
                 context.benchmark_data["execution_elapsed_time"] = end_time - start_time
                 context.benchmark_data["workflow_start_datetime"] = start_datetime
@@ -536,7 +563,8 @@ def hook_PromptExecutor_execute():
                                 context.nvidia_smi_data.append(item)
                     except Exception as e:
                         logging.error(f"Error stopping nvidia-smi thread: {e}")
-                context.save_to_log_file()
+                if should_save_benchmark:
+                    context.save_to_log_file(prompt)
                 GLOBAL_CONTEXT = None
 
         return wrapper_PromptExecutor_execute
@@ -595,7 +623,7 @@ class BenchmarkExtension(ComfyExtension):
                 # NOTE: this should never happen, but just in case
                 logging.error(f"Error getting initial nvidia smi query: {e}")
                 NVIDIA_SMI_ERROR = f"{e}"
-        return []
+        return [BenchmarkWorkflow]
 
 async def comfy_entrypoint():
     return BenchmarkExtension()
