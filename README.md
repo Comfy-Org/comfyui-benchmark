@@ -7,7 +7,7 @@ Benchmark results are saved to the `ComfyUI/outputs/benchmarks` directory as JSO
 
 ## Configuration
 
-The benchmark behavior can be configured using `config.yaml`. If a Benchmark Workflow node is placed on the graph, `file_prefix` and `file_postfix` are prepended and appended to benchmark file, respectively.
+The benchmark behavior can be configured using `config.yaml`. If a Benchmark Workflow node is placed on the graph, `file_prefix` and `file_postfix` are prepended and appended to benchmark file name, respectively.
 
 ### Setting up config.yaml
 
@@ -22,7 +22,7 @@ The `config.yaml` file contains the following settings to control benchmark data
 - `iteration_times` (default: true) - When set to false, disables logging of individual step execution times
 - `enable_thread` (default: true) - When set to false, disables nvidia-smi data collection during workflow execution (no VRAM, GPU Utilization, or Power Usage data will be recorded)
 - `check_interval` (default: 0.25) - The time interval in seconds between nvidia-smi data collection calls during workflow execution
-- `require-node` (default: false) - When set to true, benchmarks are only saved if a Benchmark Workflow node is present on the graph AND `capture_benchmark` is set to true.
+- `require_node` (default: false) - When set to true, benchmarks are only saved if a Benchmark Workflow node is present on the graph AND `capture_benchmark` is set to true.
 
 ## Visualization
 
