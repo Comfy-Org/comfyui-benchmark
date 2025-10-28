@@ -124,6 +124,9 @@ def load_config():
             "log": {
                 "iteration_times": True,
             },
+            "options": {
+                "require_node": False,
+            },
             "name_prefix": "benchmark"
         }
     config_file = os.path.join(os.path.dirname(__file__), "config.yaml")
@@ -221,7 +224,10 @@ class ExecutionContext:
         if prompt is not None:
             has_benchmark_node, postfix1, postfix2 = check_workflow_for_benchmark_node(prompt)
             if has_benchmark_node:
-                postfix = f"{postfix1}{postfix2}"
+                postfix = ""
+                for pf in [postfix1, postfix2]:
+                    if pf:
+                        postfix += f"_{pf}"
         benchmark_file = os.path.join(benchmark_dir, f"{self.workflow_name}{postfix}.json")
         try:
             with open(benchmark_file, "w") as f:
