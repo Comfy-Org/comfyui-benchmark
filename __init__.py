@@ -480,7 +480,8 @@ def hook_PromptExecutor_caches_clean_unused(executor: execution.PromptExecutor):
         return wrapper_cache_clean_unused
     if not hasattr(executor, "_hooked_by_benchmark"):
         executor.caches.outputs.clean_unused = factory_cache_clean_unused(executor.caches.outputs.clean_unused, f"outputs:{executor.caches.outputs.__class__.__name__}")
-        executor.caches.ui.clean_unused = factory_cache_clean_unused(executor.caches.ui.clean_unused, f"ui:{executor.caches.ui.__class__.__name__}")
+        if hasattr(executor.caches, "ui"):
+            executor.caches.ui.clean_unused = factory_cache_clean_unused(executor.caches.ui.clean_unused, f"ui:{executor.caches.ui.__class__.__name__}")
         executor.caches.objects.clean_unused = factory_cache_clean_unused(executor.caches.objects.clean_unused, f"objects:{executor.caches.objects.__class__.__name__}")
         setattr(executor, "_hooked_by_benchmark", True)
 
