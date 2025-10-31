@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Union, Any
+from typing import Union, Any, Tuple, Optional
 import time
 import datetime
 import logging
@@ -26,6 +26,7 @@ if comfy.model_management.is_nvidia():
     from threading import Thread
     from queue import Queue, Empty
     import subprocess
+from .nodes import BenchmarkWorkflow  # Import the custom node
 
 
 VERSION = 0
@@ -123,6 +124,9 @@ def load_config():
             "log": {
                 "iteration_times": True,
             },
+            "options": {
+                "require_node": False,
+            },
             "name_prefix": "benchmark"
         }
     config_file = os.path.join(os.path.dirname(__file__), "config.yaml")
@@ -197,6 +201,9 @@ class ExecutionContext:
     def get_log_dict(self):
         return self.config.get("log", {})
 
+    def is_require_node_enabled(self):
+        return self.config.get("options", {}).get("require_node", False)
+
     def _create_nvidia_smi_data_info(self):
         self.nvidia_smi_data_info["info_nvidia_smi_query_params"] = ", ".join(info_nvidia_smi_query)
         self.nvidia_smi_data_info["info_nvidia_smi_query"] = INFO_NVIDIA_SMI_QUERY
@@ -208,15 +215,25 @@ class ExecutionContext:
         self.psutil_data_info["psutil_query_params"] = ", ".join(psutil_query)
         self.psutil_data_info["initial_psutil_query"] = INITIAL_PSUTIL_QUERY
 
-    def save_to_log_file(self):
+    def save_to_log_file(self, prompt: dict = None):
         output_dir = folder_paths.get_output_directory()
         benchmark_dir = os.path.join(output_dir, "benchmark")
         os.makedirs(benchmark_dir, exist_ok=True)
-        benchmark_file = os.path.join(benchmark_dir, f"{self.workflow_name}.json")
+        # Check for BenchmarkWorkflow node and get postfixes
+        prefix = ""
+        postfix = ""
+        if prompt is not None:
+            has_benchmark_node, prefix, postfix = check_workflow_for_benchmark_node(prompt)
+            if prefix:
+                prefix = f"{prefix}_"
+            if postfix:
+                postfix = f"_{postfix}"
+        benchmark_name = f"{prefix}{self.workflow_name}{postfix}"
+        benchmark_file = os.path.join(benchmark_dir, f"{benchmark_name}.json")
         try:
             with open(benchmark_file, "w") as f:
                 json.dump(self.__dict__, f, indent=4, ensure_ascii=False, default=json_func)
-            logging.info(f"Benchmark: {self.workflow_name} saved to {benchmark_file}")
+            logging.info(f"Benchmark: {benchmark_name} saved to {benchmark_file}")
         except Exception as e:
             logging.error(f"Error saving benchmark file {benchmark_file}: {e}")
 
@@ -241,13 +258,14 @@ def hook_CLIP():
                 end_time = time.perf_counter()
                 if check_nested and hasattr(args[0], "_inside_benchmark_hook"):
                     delattr(args[0], "_inside_benchmark_hook")
-                context.clip_data[category].append({
-                    "model": str(args[0].cond_stage_model.__class__.__name__),
-                    "func_name": func_name,
-                    "elapsed_time": end_time - start_time,
-                    "start_time": start_time,
-                    "valid_timing": valid_timing,
-                })
+                if context is not None:
+                    context.clip_data[category].append({
+                        "model": str(args[0].cond_stage_model.__class__.__name__),
+                        "func_name": func_name,
+                        "elapsed_time": end_time - start_time,
+                        "start_time": start_time,
+                        "valid_timing": valid_timing,
+                    })
         return wrapper_CLIP
     comfy.sd.CLIP.encode = factory_CLIP(comfy.sd.CLIP.encode, "CLIP.encode", "encode")
     comfy.sd.CLIP.encode_from_tokens = factory_CLIP(comfy.sd.CLIP.encode_from_tokens, "CLIP.encode_from_tokens", "encode")
@@ -269,11 +287,12 @@ def hook_VAE():
                     raise
                 finally:
                     end_time = time.perf_counter()
-                    context.vae_data["encode"].append({
-                        "elapsed_time": end_time - start_time,
-                        "start_time": start_time,
-                        "valid_timing": valid_timing
-                    })
+                    if context is not None:
+                        context.vae_data["encode"].append({
+                            "elapsed_time": end_time - start_time,
+                            "start_time": start_time,
+                            "valid_timing": valid_timing
+                        })
             return wrapper_VAE_encode
         comfy.sd.VAE.encode = factory_VAE_encode(comfy.sd.VAE.encode)
 
@@ -291,11 +310,12 @@ def hook_VAE():
                     raise
                 finally:
                     end_time = time.perf_counter()
-                    context.vae_data["decode"].append({
-                        "elapsed_time": end_time - start_time,
-                        "start_time": start_time,
-                        "valid_timing": valid_timing
-                    })
+                    if context is not None:
+                        context.vae_data["decode"].append({
+                            "elapsed_time": end_time - start_time,
+                            "start_time": start_time,
+                            "valid_timing": valid_timing
+                        })
             return wrapper_VAE_decode
         comfy.sd.VAE.decode = factory_VAE_decode(comfy.sd.VAE.decode)
     hook_VAE_encode()
@@ -315,12 +335,13 @@ def hook_LoadedModel_model_load():
                 raise
             finally:
                 end_time = time.perf_counter()
-                context.load_data[category].append({
-                    "model": str(args[0].model.model.__class__.__name__ if model_nest == 2 else args[0].model.__class__.__name__),
-                    "elapsed_time": end_time - start_time,
-                    "start_time": start_time,
-                    "valid_timing": valid_timing
-                })
+                if context is not None:
+                    context.load_data[category].append({
+                        "model": str(args[0].model.model.__class__.__name__ if model_nest == 2 else args[0].model.__class__.__name__),
+                        "elapsed_time": end_time - start_time,
+                        "start_time": start_time,
+                        "valid_timing": valid_timing
+                    })
         return wrapper_LoadedModel_model_load
     comfy.model_management.LoadedModel.model_load = factory_LoadedModel_model_load(comfy.model_management.LoadedModel.model_load, "model_load")
     comfy.model_management.LoadedModel.model_unload = factory_LoadedModel_model_load(comfy.model_management.LoadedModel.model_unload, "model_unload")
@@ -341,12 +362,13 @@ def hook_load_state_dict():
                 raise
             finally:
                 end_time = time.perf_counter()
-                context.load_data["load_state_dict"].append({
-                    "func_name": func_name,
-                    "elapsed_time": end_time - start_time,
-                    "start_time": start_time,
-                    "valid_timing": valid_timing
-                })
+                if context is not None:
+                    context.load_data["load_state_dict"].append({
+                        "func_name": func_name,
+                        "elapsed_time": end_time - start_time,
+                        "start_time": start_time,
+                        "valid_timing": valid_timing
+                    })
         return wrapper_load_state_dict
 
     def factory_load_diffusion_model(func, func_name: str):
@@ -362,12 +384,13 @@ def hook_load_state_dict():
                 raise
             finally:
                 end_time = time.perf_counter()
-                context.load_data["load_diffusion_model"].append({
-                    "func_name": func_name,
-                    "elapsed_time": end_time - start_time,
-                    "start_time": start_time,
-                    "valid_timing": valid_timing
-                })
+                if context is not None:
+                    context.load_data["load_diffusion_model"].append({
+                        "func_name": func_name,
+                        "elapsed_time": end_time - start_time,
+                        "start_time": start_time,
+                        "valid_timing": valid_timing
+                    })
         return wrapper_load_diffusion_model
 
     comfy.sd.load_state_dict_guess_config = factory_load_state_dict(comfy.sd.load_state_dict_guess_config, "load_state_dict_guess_config")
@@ -391,12 +414,13 @@ def hook_load_torch_file():
                 raise
             finally:
                 end_time = time.perf_counter()
-                context.load_data["load_torch_file"].append({
-                    "ckpt": args[0],
-                    "elapsed_time": end_time - start_time,
-                    "start_time": start_time,
-                    "valid_timing": valid_timing
-                })
+                if context is not None:
+                    context.load_data["load_torch_file"].append({
+                        "ckpt": args[0],
+                        "elapsed_time": end_time - start_time,
+                        "start_time": start_time,
+                        "valid_timing": valid_timing
+                    })
         return wrapper_load_torch_file
     comfy.utils.load_torch_file = factory_load_torch_file(comfy.utils.load_torch_file)
 
@@ -442,9 +466,10 @@ def hook_CFGGuider_sample():
                 temp_dict = {}
                 temp_dict["model"] = guider.model_patcher.model.__class__.__name__
                 temp_dict["steps"] = len(args[4])-1  # NOTE: uses sigmas passed into sample() function
-                if GLOBAL_CONTEXT.get_log_dict().get("iteration_times", True):
-                    add_predict_noise_wrapper(model_options, GLOBAL_CONTEXT, temp_dict)
-                add_sampler_sample_wrapper(model_options, GLOBAL_CONTEXT, temp_dict)
+                if GLOBAL_CONTEXT is not None:
+                    if GLOBAL_CONTEXT.get_log_dict().get("iteration_times", True):
+                        add_predict_noise_wrapper(model_options, GLOBAL_CONTEXT, temp_dict)
+                    add_sampler_sample_wrapper(model_options, GLOBAL_CONTEXT, temp_dict)
                 guider.model_options = model_options
                 cfg_guider_start_time = time.perf_counter()
                 return func(*args, **kwargs)
@@ -457,7 +482,8 @@ def hook_CFGGuider_sample():
                     temp_dict["average_iteration_time"] = sum(temp_dict["iteration_times"]) / len(temp_dict["iteration_times"])
                 else:
                     temp_dict["average_iteration_time"] = -1
-                GLOBAL_CONTEXT.sampling_data.append(temp_dict)
+                if GLOBAL_CONTEXT is not None:
+                    GLOBAL_CONTEXT.sampling_data.append(temp_dict)
                 guider.model_options = orig_model_options
         return wrapper_CFGGuider_sample
     comfy.samplers.CFGGuider.sample = factory_CFGGuider_sample(comfy.samplers.CFGGuider.sample)
@@ -472,11 +498,12 @@ def hook_PromptExecutor_caches_clean_unused(executor: execution.PromptExecutor):
                 return func(*args, **kwargs)
             finally:
                 end_time = time.perf_counter()
-                context.caches_data["clean_unused"].append({
-                    "cache_name": cache_name,
-                    "elapsed_time": end_time - start_time,
-                    "start_time": start_time,
-                })
+                if context is not None:
+                    context.caches_data["clean_unused"].append({
+                        "cache_name": cache_name,
+                        "elapsed_time": end_time - start_time,
+                        "start_time": start_time,
+                    })
         return wrapper_cache_clean_unused
     if not hasattr(executor, "_hooked_by_benchmark"):
         executor.caches.outputs.clean_unused = factory_cache_clean_unused(executor.caches.outputs.clean_unused, f"outputs:{executor.caches.outputs.__class__.__name__}")
@@ -485,12 +512,26 @@ def hook_PromptExecutor_caches_clean_unused(executor: execution.PromptExecutor):
         executor.caches.objects.clean_unused = factory_cache_clean_unused(executor.caches.objects.clean_unused, f"objects:{executor.caches.objects.__class__.__name__}")
         setattr(executor, "_hooked_by_benchmark", True)
 
+def check_workflow_for_benchmark_node(prompt: dict) -> Tuple[bool, str, str]:
+    """
+    Check if the workflow contains a BenchmarkWorkflow node with capture_benchmark=True.
+    Returns a tuple of (has_benchmark_node, file_prefix, file_postfix).
+    """
+    for node_id, node in prompt.items():
+        if not isinstance(node, dict):
+            continue
+        class_type = node.get("class_type")
+        inputs = node.get("inputs", {})
+        if class_type == "BenchmarkWorkflow" and inputs.get("capture_benchmark", False):
+            return True, str(inputs.get("file_prefix", "")), str(inputs.get("file_postfix", ""))
+    return False, "", ""
+
 def hook_PromptExecutor_execute():
     def factory_PromptExecutor_execute(func):
         '''
         Create wrapper function that will time the total execution time for a workflow.
         '''
-        def wrapper_PromptExecutor_execute(*args, **kwargs):
+        def wrapper_PromptExecutor_execute(executor, prompt, *args, **kwargs):
             global GLOBAL_CONTEXT, ENABLE_NVIDIA_SMI_DATA, INITIAL_NVIDIA_SMI_QUERY, INFO_NVIDIA_SMI_QUERY, NVIDIA_SMI_ERROR
             args = args
             kwargs = kwargs
@@ -498,16 +539,19 @@ def hook_PromptExecutor_execute():
             context = ExecutionContext()
             GLOBAL_CONTEXT = context
             # if its an nvidia card, we can do overall memory usage tracking via nvidia-smi calls
+            should_save_benchmark = True
+            if context.is_require_node_enabled():
+                should_save_benchmark = check_workflow_for_benchmark_node(prompt)[0]
             thread_started = False
-            if context.is_nvidia_smi_thread_enabled() and ENABLE_NVIDIA_SMI_DATA:
+            if should_save_benchmark and context.is_nvidia_smi_thread_enabled() and ENABLE_NVIDIA_SMI_DATA:
                 out_queue, in_queue, thread = create_nvidia_smi_thread(context.get_nvidia_smi_check_interval())
                 thread_started = True
             # hook caches, but only once per startup of ComfyUI
-            hook_PromptExecutor_caches_clean_unused(args[0])
+            hook_PromptExecutor_caches_clean_unused(executor)
             try:
                 start_datetime = datetime.datetime.now().strftime("%Y/%m/%d %H:%M:%S.%f")
                 start_time = time.perf_counter()
-                result = func(*args, **kwargs)
+                result = func(executor, prompt, *args, **kwargs)
                 end_time = time.perf_counter()
                 context.benchmark_data["execution_elapsed_time"] = end_time - start_time
                 context.benchmark_data["workflow_start_datetime"] = start_datetime
@@ -527,7 +571,8 @@ def hook_PromptExecutor_execute():
                                 context.nvidia_smi_data.append(item)
                     except Exception as e:
                         logging.error(f"Error stopping nvidia-smi thread: {e}")
-                context.save_to_log_file()
+                if should_save_benchmark:
+                    context.save_to_log_file(prompt)
                 GLOBAL_CONTEXT = None
 
         return wrapper_PromptExecutor_execute
@@ -586,7 +631,7 @@ class BenchmarkExtension(ComfyExtension):
                 # NOTE: this should never happen, but just in case
                 logging.error(f"Error getting initial nvidia smi query: {e}")
                 NVIDIA_SMI_ERROR = f"{e}"
-        return []
+        return [BenchmarkWorkflow]
 
 async def comfy_entrypoint():
     return BenchmarkExtension()
