@@ -5,6 +5,18 @@ Custom extension for benchmarking ComfyUI performance
 
 Benchmark results are saved to the `ComfyUI/outputs/benchmarks` directory as JSON files with timestamps in their filenames.
 
+### What gets captured
+
+A single background sampler runs on **every** backend and records, on a fixed interval (`check_interval`):
+
+- **CPU + RAM** (`psutil_data`) — `timestamp, ram_used_bytes, ram_total_bytes, cpu_percent`. Captured on all machines, including CPU-only.
+- **GPU — NVIDIA** (`nvidia_smi_data`) — VRAM used/total, GPU + memory utilization %, temperature, power draw/instant/limit, SM + memory clocks, PCIe link gen/width (via `nvidia-smi`).
+- **GPU — Apple Silicon / MPS** (`device_memory_data`) — `timestamp, current_allocated_bytes` (bytes held by live tensors) and `driver_allocated_bytes` (total bytes the Metal driver reserved), via `torch.mps` (there is no `nvidia-smi` on Apple Silicon).
+
+Alongside the time series, each run records **operation timings** (model load, CLIP, VAE encode/decode, sampler total + per-step iteration times → it/s, total workflow time) and a static **`device_info`** snapshot: GPU name, `backend` (`nvidia` / `mps` / `cpu`), PyTorch + Python + ComfyUI versions, OS/platform/architecture, `cpu_model` + physical/logical core counts, and total VRAM/RAM.
+
+`device_info.backend` exists so results are **never compared across memory types** — MPS/CPU memory is drawn from unified system RAM, not dedicated VRAM. (Timeline visualization of the MPS series in `visualize_benchmark.py` is a follow-up; all of the above is captured now.)
+
 ## Configuration
 
 The benchmark behavior can be configured using `config.yaml`. If a Benchmark Workflow node is placed on the graph, `file_prefix` and `file_postfix` are prepended and appended to benchmark file name, respectively.
@@ -20,8 +32,8 @@ The benchmark behavior can be configured using `config.yaml`. If a Benchmark Wor
 The `config.yaml` file contains the following settings to control benchmark data collection:
 
 - `iteration_times` (default: true) - When set to false, disables logging of individual step execution times
-- `enable_thread` (default: true) - When set to false, disables nvidia-smi data collection during workflow execution (no VRAM, GPU Utilization, or Power Usage data will be recorded)
-- `check_interval` (default: 0.25) - The time interval in seconds between nvidia-smi data collection calls during workflow execution
+- `enable_thread` (default: true) - When set to false, disables the background sampler (no CPU/RAM time series, and no GPU VRAM/utilization/power/memory data). Operation timings are still recorded. (The `nvidia-smi` config key is retained for backward compatibility; the sampler now covers all backends.)
+- `check_interval` (default: 0.25) - The time interval in seconds between sampler ticks during workflow execution
 - `require_node` (default: false) - When set to true, benchmarks are only saved if a Benchmark Workflow node is present on the graph AND `capture_benchmark` is set to true.
 
 ## Visualization
