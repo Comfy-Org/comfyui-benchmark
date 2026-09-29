@@ -9,6 +9,7 @@ import json
 import argparse
 import yaml
 import psutil
+import torch
 
 from comfy_api.latest import ComfyExtension, io
 import execution
@@ -22,10 +23,11 @@ import comfy.utils
 import comfy.sd
 
 
-if comfy.model_management.is_nvidia():
-    from threading import Thread
-    from queue import Queue, Empty
-    import subprocess
+# Sampling runs in a background thread for any backend with a memory probe
+# (nvidia-smi on NVIDIA, torch.mps on Apple Silicon), so these are always imported.
+from threading import Thread
+from queue import Queue, Empty
+import subprocess
 from .nodes import BenchmarkWorkflow  # Import the custom node
 
 cuda_device_arg = comfy.cli_args.args.cuda_device
@@ -40,8 +42,19 @@ INITIAL_NVIDIA_SMI_QUERY = None
 INFO_NVIDIA_SMI_QUERY = None
 NVIDIA_SMI_ERROR = None
 
+# Non-NVIDIA torch device memory (e.g. Apple Silicon / MPS), sampled via torch.
+ENABLE_DEVICE_MEMORY_DATA = False
+DEVICE_MEMORY_BACKEND = None
+INITIAL_DEVICE_MEMORY_QUERY = None
+DEVICE_MEMORY_ERROR = None
+
 INITIAL_PSUTIL_QUERY = None
 psutil_query = ["timestamp", "used", "total"]
+
+# torch.mps exposes bytes currently held by live tensors and total bytes the
+# Metal driver has reserved for this process. On unified memory both are drawn
+# from system RAM, so the corpus must segment MPS from dedicated-VRAM backends.
+device_memory_query = ["timestamp", "current_allocated_bytes", "driver_allocated_bytes"]
 
 nvidia_smi_query = ["timestamp", "memory.used", "memory.total", "utilization.gpu", "utilization.memory", "power.draw", "power.draw.instant", "power.limit", "pcie.link.gen.current", "pcie.link.gen.max", "pcie.link.width.current"]
 _nvidia_smi_query_list = ["nvidia-smi", "--query-gpu=" + ",".join(nvidia_smi_query), "--format=csv,noheader,nounits", smi_id]
@@ -84,6 +97,43 @@ def get_from_nvidia_smi(query: str, param: str, _query_list: list[str]=nvidia_sm
     index = nvidia_smi_query.index(param)
     values = query.split(",")
     return values[index]
+
+
+# For non-NVIDIA torch devices (Apple Silicon today) we can't shell out to
+# nvidia-smi, but torch itself reports device memory. Mirror the nvidia thread.
+def call_torch_mps(include_prefix=True):
+    prefix = "mps:" if include_prefix else ""
+    current = torch.mps.current_allocated_memory()
+    driver = torch.mps.driver_allocated_memory()
+    return f"{prefix}{time.perf_counter()},{current},{driver}"
+
+def device_memory_thread(out_queue: Queue, in_queue: Queue, check_interval: float):
+    logging.info("Starting device-memory thread")
+    while True:
+        try:
+            out_queue.put(call_torch_mps(include_prefix=True))
+            out_queue.put(call_psutil())
+        except Exception as e:
+            logging.error(f"Breaking out of device-memory thread due to {e}")
+            break
+        try:
+            item = in_queue.get(timeout=check_interval)
+            if item == "stop":
+                break
+        except Empty:
+            pass
+        except Exception as e:
+            logging.error(f"Breaking out of device-memory thread reading in_queue due to {e}")
+            break
+    logging.info("Exiting device-memory thread")
+
+def create_device_memory_thread(check_interval: float):
+    out_queue = Queue()
+    in_queue = Queue()
+    thread = Thread(target=device_memory_thread, args=(out_queue, in_queue, check_interval))
+    thread.daemon = True
+    thread.start()
+    return out_queue, in_queue, thread
 
 
 def json_func(obj):
@@ -162,6 +212,9 @@ class ExecutionContext:
             "vram_state": comfy.model_management.vram_state.name,
             "total_vram": comfy.model_management.total_vram,
             "total_ram": comfy.model_management.total_ram,
+            # Comparability axis: nvidia (dedicated VRAM) vs mps/cpu (unified with
+            # system RAM). The corpus must never rank unified against dedicated.
+            "backend": "nvidia" if comfy.model_management.is_nvidia() else ("mps" if torch.backends.mps.is_available() else "cpu"),
         }
         self.benchmark_data: dict[str] = {}
         self.load_data: dict[str,list[dict[str]]] = {
@@ -189,9 +242,12 @@ class ExecutionContext:
         self.config: dict[str, Union[dict[str], Any]] = config
         self.nvidia_smi_data_info: dict[str, str] = {}
         self.nvidia_smi_data: list[str] = []
+        self.device_memory_data_info: dict[str, str] = {}
+        self.device_memory_data: list[str] = []
         self.psutil_data_info: dict[str, str] = {}
         self.psutil_data: list[str] = []
         self._create_nvidia_smi_data_info()
+        self._create_device_memory_data_info()
         self._create_psutil_data_info()
 
     def is_nvidia_smi_thread_enabled(self):
@@ -212,6 +268,12 @@ class ExecutionContext:
         self.nvidia_smi_data_info["nvidia_smi_query_params"] = ", ".join(nvidia_smi_query)
         self.nvidia_smi_data_info["initial_nvidia_smi_query"] = INITIAL_NVIDIA_SMI_QUERY
         self.nvidia_smi_data_info["nvidia_smi_error"] = NVIDIA_SMI_ERROR
+
+    def _create_device_memory_data_info(self):
+        self.device_memory_data_info["device_memory_query_params"] = ", ".join(device_memory_query)
+        self.device_memory_data_info["device_memory_backend"] = DEVICE_MEMORY_BACKEND
+        self.device_memory_data_info["initial_device_memory_query"] = INITIAL_DEVICE_MEMORY_QUERY
+        self.device_memory_data_info["device_memory_error"] = DEVICE_MEMORY_ERROR
 
     def _create_psutil_data_info(self):
         self.psutil_data_info["psutil_query_params"] = ", ".join(psutil_query)
@@ -548,6 +610,9 @@ def hook_PromptExecutor_execute():
             if should_save_benchmark and context.is_nvidia_smi_thread_enabled() and ENABLE_NVIDIA_SMI_DATA:
                 out_queue, in_queue, thread = create_nvidia_smi_thread(context.get_nvidia_smi_check_interval())
                 thread_started = True
+            elif should_save_benchmark and context.is_nvidia_smi_thread_enabled() and ENABLE_DEVICE_MEMORY_DATA:
+                out_queue, in_queue, thread = create_device_memory_thread(context.get_nvidia_smi_check_interval())
+                thread_started = True
             # hook caches, but only once per startup of ComfyUI
             hook_PromptExecutor_caches_clean_unused(executor)
             try:
@@ -568,7 +633,9 @@ def hook_PromptExecutor_execute():
                         while not out_queue.empty():
                             item: str = out_queue.get_nowait()
                             if item.startswith("psutil:"):
-                                context.psutil_data.append(item.split(":")[1])
+                                context.psutil_data.append(item.split(":", 1)[1])
+                            elif item.startswith("mps:"):
+                                context.device_memory_data.append(item.split(":", 1)[1])
                             else:
                                 context.nvidia_smi_data.append(item)
                     except Exception as e:
@@ -620,6 +687,7 @@ def call_psutil(include_prefix=True):
 class BenchmarkExtension(ComfyExtension):
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
         global INITIAL_NVIDIA_SMI_QUERY, ENABLE_NVIDIA_SMI_DATA, NVIDIA_SMI_ERROR, INFO_NVIDIA_SMI_QUERY, INITIAL_PSUTIL_QUERY
+        global ENABLE_DEVICE_MEMORY_DATA, DEVICE_MEMORY_BACKEND, INITIAL_DEVICE_MEMORY_QUERY, DEVICE_MEMORY_ERROR
         initialize_benchmark_hooks()
         INITIAL_PSUTIL_QUERY = call_psutil(include_prefix=False)
         if comfy.model_management.is_nvidia():
@@ -633,6 +701,15 @@ class BenchmarkExtension(ComfyExtension):
                 # NOTE: this should never happen, but just in case
                 logging.error(f"Error getting initial nvidia smi query: {e}")
                 NVIDIA_SMI_ERROR = f"{e}"
+        elif torch.backends.mps.is_available():
+            # Apple Silicon has no nvidia-smi; sample device memory through torch.
+            try:
+                INITIAL_DEVICE_MEMORY_QUERY = call_torch_mps(include_prefix=False)
+                DEVICE_MEMORY_BACKEND = "mps"
+                ENABLE_DEVICE_MEMORY_DATA = True
+            except Exception as e:
+                logging.error(f"Error getting initial mps memory query: {e}")
+                DEVICE_MEMORY_ERROR = f"{e}"
         return [BenchmarkWorkflow]
 
 async def comfy_entrypoint():

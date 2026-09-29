@@ -5,6 +5,10 @@ Custom extension for benchmarking ComfyUI performance
 
 Benchmark results are saved to the `ComfyUI/outputs/benchmarks` directory as JSON files with timestamps in their filenames.
 
+### Device memory (NVIDIA and Apple Silicon)
+
+On NVIDIA GPUs, `nvidia-smi` is polled during the run for VRAM, GPU utilization, and power (see `nvidia_smi_data`). On Apple Silicon (MPS) — where there is no `nvidia-smi` — memory is instead sampled through `torch.mps` at the same interval and written to `device_memory_data`: `timestamp, current_allocated_bytes` (bytes held by live tensors) and `driver_allocated_bytes` (total bytes the Metal driver has reserved for the process). `device_info.backend` records `nvidia` / `mps` / `cpu` so results are never compared across memory types — MPS memory is drawn from unified system RAM, not dedicated VRAM. Sampling is controlled by the same `nvidia-smi.enable_thread` / `check_interval` config. (Timeline visualization of the MPS series in `visualize_benchmark.py` is a follow-up; the data is captured now.)
+
 ## Configuration
 
 The benchmark behavior can be configured using `config.yaml`. If a Benchmark Workflow node is placed on the graph, `file_prefix` and `file_postfix` are prepended and appended to benchmark file name, respectively.
