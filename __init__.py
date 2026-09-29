@@ -7,6 +7,7 @@ import os
 import sys
 import json
 import argparse
+import platform
 import yaml
 import psutil
 import torch
@@ -49,47 +50,28 @@ INITIAL_DEVICE_MEMORY_QUERY = None
 DEVICE_MEMORY_ERROR = None
 
 INITIAL_PSUTIL_QUERY = None
-psutil_query = ["timestamp", "used", "total"]
+# System sampler: RAM (bytes) + CPU utilization (% of all cores since last tick).
+psutil_query = ["timestamp", "used", "total", "cpu_percent"]
 
 # torch.mps exposes bytes currently held by live tensors and total bytes the
 # Metal driver has reserved for this process. On unified memory both are drawn
 # from system RAM, so the corpus must segment MPS from dedicated-VRAM backends.
 device_memory_query = ["timestamp", "current_allocated_bytes", "driver_allocated_bytes"]
 
-nvidia_smi_query = ["timestamp", "memory.used", "memory.total", "utilization.gpu", "utilization.memory", "power.draw", "power.draw.instant", "power.limit", "pcie.link.gen.current", "pcie.link.gen.max", "pcie.link.width.current"]
+nvidia_smi_query = ["timestamp", "memory.used", "memory.total", "utilization.gpu", "utilization.memory", "temperature.gpu", "power.draw", "power.draw.instant", "power.limit", "clocks.current.sm", "clocks.current.memory", "pcie.link.gen.current", "pcie.link.gen.max", "pcie.link.width.current"]
 _nvidia_smi_query_list = ["nvidia-smi", "--query-gpu=" + ",".join(nvidia_smi_query), "--format=csv,noheader,nounits", smi_id]
 
 info_nvidia_smi_query = ["name", "count", "driver_version", "display_active", "vbios_version", "power.management"]
 _info_nvidia_smi_query_list = ["nvidia-smi", "--query-gpu=" + ",".join(info_nvidia_smi_query), "--format=csv,noheader,nounits", smi_id]
 
-# For NVIDIA devices, during the benchmark setup a process to call nvidia-smi regularly (or with varying intervals)
-def nvidia_smi_thread(out_queue: Queue, in_queue: Queue, check_interval: float):
-    logging.info("Starting nvidia-smi thread")
-    while True:
-        try:
-            out_queue.put(call_nvidia_smi(_nvidia_smi_query_list, raise_error=True))
-            out_queue.put(call_psutil())
-        except Exception as e:
-            logging.error(f"Breaking out of nvidia-smi thread due to {e}")
-            break
-        try:
-            item = in_queue.get(timeout=check_interval)
-            if item == "stop":
-                break
-        except Empty:
-            pass
-        except Exception as e:
-            logging.error(f"Breaking out of nvidia-smi thread reading in_queue due to {e}")
-            break
-    logging.info("Exiting nvidia-smi thread")
-
-def create_nvidia_smi_thread(check_interval: float):
-    out_queue = Queue()
-    in_queue = Queue()
-    thread = Thread(target=nvidia_smi_thread, args=(out_queue, in_queue, check_interval))
-    thread.daemon = True
-    thread.start()
-    return out_queue, in_queue, thread
+# GPU memory probes, each returning one CSV line. NVIDIA shells out to nvidia-smi
+# (rich telemetry); Apple Silicon reads device memory from torch (no nvidia-smi).
+# The drain routes a line by its prefix (mps:) or falls through to nvidia.
+def call_torch_mps(include_prefix=True):
+    prefix = "mps:" if include_prefix else ""
+    current = torch.mps.current_allocated_memory()
+    driver = torch.mps.driver_allocated_memory()
+    return f"{prefix}{time.perf_counter()},{current},{driver}"
 
 def get_from_nvidia_smi(query: str, param: str, _query_list: list[str]=nvidia_smi_query):
     if param not in nvidia_smi_query:
@@ -98,23 +80,18 @@ def get_from_nvidia_smi(query: str, param: str, _query_list: list[str]=nvidia_sm
     values = query.split(",")
     return values[index]
 
-
-# For non-NVIDIA torch devices (Apple Silicon today) we can't shell out to
-# nvidia-smi, but torch itself reports device memory. Mirror the nvidia thread.
-def call_torch_mps(include_prefix=True):
-    prefix = "mps:" if include_prefix else ""
-    current = torch.mps.current_allocated_memory()
-    driver = torch.mps.driver_allocated_memory()
-    return f"{prefix}{time.perf_counter()},{current},{driver}"
-
-def device_memory_thread(out_queue: Queue, in_queue: Queue, check_interval: float):
-    logging.info("Starting device-memory thread")
+# One sampler thread for every backend: it always records CPU + RAM (psutil), and
+# GPU telemetry on the same cadence when a probe is available. gpu_probe is a
+# no-arg callable returning a CSV line, or None on CPU-only machines.
+def system_sampler_thread(out_queue: Queue, in_queue: Queue, check_interval: float, gpu_probe=None):
+    logging.info("Starting system sampler thread")
     while True:
         try:
-            out_queue.put(call_torch_mps(include_prefix=True))
+            if gpu_probe is not None:
+                out_queue.put(gpu_probe())
             out_queue.put(call_psutil())
         except Exception as e:
-            logging.error(f"Breaking out of device-memory thread due to {e}")
+            logging.error(f"Breaking out of system sampler thread due to {e}")
             break
         try:
             item = in_queue.get(timeout=check_interval)
@@ -123,14 +100,14 @@ def device_memory_thread(out_queue: Queue, in_queue: Queue, check_interval: floa
         except Empty:
             pass
         except Exception as e:
-            logging.error(f"Breaking out of device-memory thread reading in_queue due to {e}")
+            logging.error(f"Breaking out of system sampler thread reading in_queue due to {e}")
             break
-    logging.info("Exiting device-memory thread")
+    logging.info("Exiting system sampler thread")
 
-def create_device_memory_thread(check_interval: float):
+def create_system_sampler_thread(check_interval: float, gpu_probe=None):
     out_queue = Queue()
     in_queue = Queue()
-    thread = Thread(target=device_memory_thread, args=(out_queue, in_queue, check_interval))
+    thread = Thread(target=system_sampler_thread, args=(out_queue, in_queue, check_interval, gpu_probe))
     thread.daemon = True
     thread.start()
     return out_queue, in_queue, thread
@@ -215,6 +192,13 @@ class ExecutionContext:
             # Comparability axis: nvidia (dedicated VRAM) vs mps/cpu (unified with
             # system RAM). The corpus must never rank unified against dedicated.
             "backend": "nvidia" if comfy.model_management.is_nvidia() else ("mps" if torch.backends.mps.is_available() else "cpu"),
+            "cpu_model": get_cpu_model(),
+            "cpu_count_physical": psutil.cpu_count(logical=False),
+            "cpu_count_logical": psutil.cpu_count(logical=True),
+            "architecture": platform.machine(),
+            "platform": platform.platform(),
+            "python_version": sys.version.split()[0],
+            "comfyui_version": get_comfyui_version(),
         }
         self.benchmark_data: dict[str] = {}
         self.load_data: dict[str,list[dict[str]]] = {
@@ -607,11 +591,14 @@ def hook_PromptExecutor_execute():
             if context.is_require_node_enabled():
                 should_save_benchmark = check_workflow_for_benchmark_node(prompt)[0]
             thread_started = False
-            if should_save_benchmark and context.is_nvidia_smi_thread_enabled() and ENABLE_NVIDIA_SMI_DATA:
-                out_queue, in_queue, thread = create_nvidia_smi_thread(context.get_nvidia_smi_check_interval())
-                thread_started = True
-            elif should_save_benchmark and context.is_nvidia_smi_thread_enabled() and ENABLE_DEVICE_MEMORY_DATA:
-                out_queue, in_queue, thread = create_device_memory_thread(context.get_nvidia_smi_check_interval())
+            gpu_probe = None
+            if ENABLE_NVIDIA_SMI_DATA:
+                gpu_probe = lambda: call_nvidia_smi(_nvidia_smi_query_list, raise_error=True)
+            elif ENABLE_DEVICE_MEMORY_DATA:
+                gpu_probe = lambda: call_torch_mps(include_prefix=True)
+            # Always sample CPU + RAM (psutil); add GPU telemetry when a probe exists.
+            if should_save_benchmark and context.is_nvidia_smi_thread_enabled():
+                out_queue, in_queue, thread = create_system_sampler_thread(context.get_nvidia_smi_check_interval(), gpu_probe)
                 thread_started = True
             # hook caches, but only once per startup of ComfyUI
             hook_PromptExecutor_caches_clean_unused(executor)
@@ -681,8 +668,36 @@ def call_nvidia_smi(query_list: list[str], decode=True, set_nvidia_smi_error=Fal
 
 def call_psutil(include_prefix=True):
     memory_info = psutil.virtual_memory()
+    # interval=None returns CPU% since the previous call; the sampler ticks on a
+    # fixed cadence, and get_node_list primes it so the first real sample is valid.
+    cpu_percent = psutil.cpu_percent(interval=None)
     prefix = "psutil:" if include_prefix else ""
-    return f"{prefix}{time.perf_counter()},{memory_info.used},{memory_info.total}"
+    return f"{prefix}{time.perf_counter()},{memory_info.used},{memory_info.total},{cpu_percent}"
+
+def get_cpu_model() -> str:
+    """Best-effort human-readable CPU name across platforms."""
+    try:
+        if sys.platform == "darwin":
+            return subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"]).decode().strip()
+        if sys.platform.startswith("linux"):
+            with open("/proc/cpuinfo") as f:
+                for line in f:
+                    if line.lower().startswith("model name"):
+                        return line.split(":", 1)[1].strip()
+        return platform.processor() or platform.machine()
+    except Exception:
+        try:
+            return platform.machine()
+        except Exception:
+            return ""
+
+def get_comfyui_version() -> Optional[str]:
+    """Best-effort ComfyUI version so a run is a self-contained corpus record."""
+    try:
+        import comfyui_version
+        return getattr(comfyui_version, "__version__", None)
+    except Exception:
+        return None
 
 class BenchmarkExtension(ComfyExtension):
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
